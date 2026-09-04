@@ -42,6 +42,7 @@ void main() {
         'sync_outbox',
         'import_records',
         'import_reports',
+        'price_list_preferences',
       ]),
     );
     final variantColumns = await database.database.rawQuery(
@@ -71,6 +72,13 @@ void main() {
     );
     final quoteItemColumns = await database.database.rawQuery(
       'PRAGMA table_info(quote_items)',
+    );
+    final settingsColumns = await database.database.rawQuery(
+      'PRAGMA table_info(app_settings)',
+    );
+    expect(
+      settingsColumns.map((row) => row['name']),
+      contains('business_logo_path'),
     );
     expect(
       quoteItemColumns.map((row) => row['name']),
@@ -307,131 +315,227 @@ void main() {
     },
   );
 
-  test(
-    'migra realmente v5 a v6 y conserva todos los datos existentes',
-    () async {
-      final directory = await Directory.systemTemp.createTemp('manos-v5-');
-      addTearDown(() => directory.delete(recursive: true));
-      final path = paths.join(directory.path, 'manos.db');
-      final oldDatabase = await databaseFactoryFfi.openDatabase(
-        path,
-        options: OpenDatabaseOptions(
-          version: 5,
-          onCreate: (database, version) =>
-              DatabaseMigrations.migrate(database, 0, version),
-        ),
-      );
-      final materialCategory = (await oldDatabase.query('material_categories'))
-          .first;
-      final productCategory = (await oldDatabase.query('product_categories'))
-          .first;
-      final gram = (await oldDatabase.query(
-        'measurement_units',
-        where: 'code = ?',
-        whereArgs: ['gram'],
-      )).single;
-      final now = DateTime.utc(2026, 9, 2).toIso8601String();
-      await oldDatabase.insert('app_settings', {
-        'singleton_id': 1,
-        'business_name': 'Taller conservado',
-        'currency': 'ARS',
-        'default_waste_scaled': 15000,
-        'default_thread_scaled': 60000,
-        'updated_at': now,
-      });
-      await oldDatabase.insert('materials', {
-        'id': 'material-v4',
-        'category_id': materialCategory['id'],
-        'name': 'Cordón conservado',
-        'purchase_quantity_scaled': DecimalValue.parse('1000').scaledValue,
-        'purchase_unit_id': gram['id'],
-        'purchase_price_minor': 100000,
-        'currency': 'ARS',
-        'consumption_unit_id': gram['id'],
-        'is_active': 1,
-        'created_at': now,
-        'updated_at': now,
-      });
-      await oldDatabase.insert('products', {
-        'id': 'product-v4',
-        'category_id': productCategory['id'],
-        'name': 'Cesto conservado',
-        'price_multiplier_scaled': DecimalValue.parse('2').scaledValue,
-        'geometry_profile_json': '{"version":1,"shapeCode":"cylinder","components":["base","lateral"],"dimensionBindings":{"diameter":"Diámetro","height":"Alto"},"lidType":"none"}',
-        'is_active': 1,
-        'created_at': now,
-        'updated_at': now,
-      });
-      await oldDatabase.insert('product_material_usages', {
-        'id': 'usage-v4',
-        'product_id': 'product-v4',
-        'material_id': 'material-v4',
-        'amount_scaled': DecimalValue.parse('400').scaledValue,
-        'unit_id': gram['id'],
-        'role': 'primary',
-        'consumption_source': 'confirmed',
-        'created_at': now,
-        'updated_at': now,
-      });
-      await oldDatabase.insert('quotes', {
-        'id': 'quote-v4',
-        'customer_name': 'Cliente conservado',
-        'quote_date': now,
-        'valid_until': DateTime.utc(2026, 9, 17).toIso8601String(),
-        'validity_days': 15,
-        'price_type': 'retail',
-        'currency': 'ARS',
-        'total_minor': 123456,
-        'created_at': now,
-        'updated_at': now,
-      });
-      await oldDatabase.insert('quote_items', {
-        'id': 'item-v4',
-        'quote_id': 'quote-v4',
-        'source_product_id': 'product-v4',
-        'description': 'Ítem conservado',
-        'quantity_scaled': DecimalValue.scale,
-        'unit_price_minor': 123456,
-        'currency': 'ARS',
-        'price_multiplier_scaled': DecimalValue.parse('2').scaledValue,
-        'snapshot_json': '{"version":1,"dato":"snapshot conservado"}',
-        'geometry_profile_json': '{"version":1,"shapeCode":"circle","components":["base"],"dimensionBindings":{"diameter":"Diámetro"},"lidType":"none"}',
-        'created_at': now,
-        'updated_at': now,
-      });
-      await oldDatabase.close();
+  test('migra realmente v5 a la versión actual y conserva todos los datos existentes', () async {
+    final directory = await Directory.systemTemp.createTemp('manos-v5-');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = paths.join(directory.path, 'manos.db');
+    final oldDatabase = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: (database, version) =>
+            DatabaseMigrations.migrate(database, 0, version),
+      ),
+    );
+    final materialCategory = (await oldDatabase.query('material_categories'))
+        .first;
+    final productCategory = (await oldDatabase.query('product_categories'))
+        .first;
+    final gram = (await oldDatabase.query(
+      'measurement_units',
+      where: 'code = ?',
+      whereArgs: ['gram'],
+    )).single;
+    final now = DateTime.utc(2026, 9, 2).toIso8601String();
+    await oldDatabase.insert('app_settings', {
+      'singleton_id': 1,
+      'business_name': 'Taller conservado',
+      'currency': 'ARS',
+      'default_waste_scaled': 15000,
+      'default_thread_scaled': 60000,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('materials', {
+      'id': 'material-v4',
+      'category_id': materialCategory['id'],
+      'name': 'Cordón conservado',
+      'purchase_quantity_scaled': DecimalValue.parse('1000').scaledValue,
+      'purchase_unit_id': gram['id'],
+      'purchase_price_minor': 100000,
+      'currency': 'ARS',
+      'consumption_unit_id': gram['id'],
+      'is_active': 1,
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('products', {
+      'id': 'product-v4',
+      'category_id': productCategory['id'],
+      'name': 'Cesto conservado',
+      'price_multiplier_scaled': DecimalValue.parse('2').scaledValue,
+      'geometry_profile_json': '{"version":1,"shapeCode":"cylinder","components":["base","lateral"],"dimensionBindings":{"diameter":"Diámetro","height":"Alto"},"lidType":"none"}',
+      'is_active': 1,
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('product_material_usages', {
+      'id': 'usage-v4',
+      'product_id': 'product-v4',
+      'material_id': 'material-v4',
+      'amount_scaled': DecimalValue.parse('400').scaledValue,
+      'unit_id': gram['id'],
+      'role': 'primary',
+      'consumption_source': 'confirmed',
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('quotes', {
+      'id': 'quote-v4',
+      'customer_name': 'Cliente conservado',
+      'quote_date': now,
+      'valid_until': DateTime.utc(2026, 9, 17).toIso8601String(),
+      'validity_days': 15,
+      'price_type': 'retail',
+      'currency': 'ARS',
+      'total_minor': 123456,
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('quote_items', {
+      'id': 'item-v4',
+      'quote_id': 'quote-v4',
+      'source_product_id': 'product-v4',
+      'description': 'Ítem conservado',
+      'quantity_scaled': DecimalValue.scale,
+      'unit_price_minor': 123456,
+      'currency': 'ARS',
+      'price_multiplier_scaled': DecimalValue.parse('2').scaledValue,
+      'snapshot_json': '{"version":1,"dato":"snapshot conservado"}',
+      'geometry_profile_json': '{"version":1,"shapeCode":"circle","components":["base"],"dimensionBindings":{"diameter":"Diámetro"},"lidType":"none"}',
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.close();
 
-      final upgraded = await AppDatabase.open(
-        factory: databaseFactoryFfi,
-        path: path,
-      );
-      addTearDown(upgraded.close);
+    final upgraded = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: path,
+    );
+    addTearDown(upgraded.close);
 
-      expect(
-        await upgraded.database.getVersion(),
-        DatabaseMigrations.currentVersion,
-      );
-      expect(
-        (await upgraded.database.query('app_settings')).single['business_name'],
-        'Taller conservado',
-      );
-      expect(
-        (await upgraded.database.query('materials')).single['name'],
-        'Cordón conservado',
-      );
-      final product = (await upgraded.database.query('products')).single;
-      expect(product['name'], 'Cesto conservado');
-      expect(product['geometry_profile_json'], contains('cylinder'));
-      final usage = (await upgraded.database.query('product_material_usages'))
-          .single;
-      expect(usage['consumption_source'], 'confirmed');
-      expect(usage['calibration_eligible'], 1);
-      final item = (await upgraded.database.query('quote_items')).single;
-      expect(item['snapshot_json'], contains('snapshot conservado'));
-      expect(item['geometry_profile_json'], contains('circle'));
-      expect(await upgraded.database.query('import_records'), isEmpty);
-    },
-  );
+    expect(
+      await upgraded.database.getVersion(),
+      DatabaseMigrations.currentVersion,
+    );
+    expect(
+      (await upgraded.database.query('app_settings')).single['business_name'],
+      'Taller conservado',
+    );
+    expect(
+      (await upgraded.database.query('materials')).single['name'],
+      'Cordón conservado',
+    );
+    final product = (await upgraded.database.query('products')).single;
+    expect(product['name'], 'Cesto conservado');
+    expect(product['geometry_profile_json'], contains('cylinder'));
+    final usage = (await upgraded.database.query('product_material_usages'))
+        .single;
+    expect(usage['consumption_source'], 'confirmed');
+    expect(usage['calibration_eligible'], 1);
+    final item = (await upgraded.database.query('quote_items')).single;
+    expect(item['snapshot_json'], contains('snapshot conservado'));
+    expect(item['geometry_profile_json'], contains('circle'));
+    expect(await upgraded.database.query('import_records'), isEmpty);
+  });
+
+  test('migra v7 a v8 sin alterar productos, presupuestos, preferencias ni importaciones', () async {
+    final directory = await Directory.systemTemp.createTemp('manos-v6-');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = paths.join(directory.path, 'manos.db');
+    final oldDatabase = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 7,
+        onCreate: (database, version) =>
+            DatabaseMigrations.migrate(database, 0, version),
+      ),
+    );
+    final productCategory = (await oldDatabase.query('product_categories'))
+        .first;
+    final now = DateTime.utc(2026, 9, 3).toIso8601String();
+    await oldDatabase.insert('app_settings', {
+      'singleton_id': 1,
+      'business_name': 'Manos conservado',
+      'currency': 'ARS',
+      'default_waste_scaled': 15000,
+      'default_thread_scaled': 60000,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('products', {
+      'id': 'product-v6',
+      'category_id': productCategory['id'],
+      'name': 'Producto que no se pierde',
+      'price_multiplier_scaled': DecimalValue.parse('2.4').scaledValue,
+      'is_active': 1,
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('quotes', {
+      'id': 'quote-v6',
+      'customer_name': 'Cliente que no se pierde',
+      'quote_date': now,
+      'valid_until': DateTime.utc(2026, 9, 18).toIso8601String(),
+      'validity_days': 15,
+      'price_type': 'retail',
+      'currency': 'ARS',
+      'total_minor': 987654,
+      'created_at': now,
+      'updated_at': now,
+    });
+    await oldDatabase.insert('import_records', {
+      'id': 'import-v6',
+      'source_key': 'archivo|hoja|producto|1',
+      'spreadsheet_id': 'archivo',
+      'sheet_name': 'Productos',
+      'source_row': 1,
+      'section': 'Catálogo',
+      'record_type': 'product',
+      'target_id': 'product-v6',
+      'original_name': 'Producto que no se pierde',
+      'imported_at': now,
+      'last_seen_at': now,
+    });
+    await oldDatabase.insert('price_list_preferences', {
+      'price_type': 'retail',
+      'config_json': '{"version":1,"showPhotos":false}',
+      'updated_at': now,
+    });
+    await oldDatabase.close();
+
+    final upgraded = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: path,
+    );
+    addTearDown(upgraded.close);
+
+    expect(await upgraded.database.getVersion(), 8);
+    expect(
+      (await upgraded.database.query('products')).single['name'],
+      'Producto que no se pierde',
+    );
+    expect(
+      (await upgraded.database.query('quotes')).single['customer_name'],
+      'Cliente que no se pierde',
+    );
+    expect(
+      (await upgraded.database.query('import_records')).single['target_id'],
+      'product-v6',
+    );
+    final settingsColumns = await upgraded.database.rawQuery(
+      'PRAGMA table_info(app_settings)',
+    );
+    expect(
+      settingsColumns.map((row) => row['name']),
+      contains('business_logo_path'),
+    );
+    expect(
+      (await upgraded.database.query('price_list_preferences'))
+          .single['config_json'],
+      contains('showPhotos'),
+    );
+    expect(await upgraded.database.query('sync_outbox'), isNotEmpty);
+    expect(await upgraded.database.query('sync_entity_state'), isEmpty);
+  });
 }
 
 PurchasePresentation _presentation({

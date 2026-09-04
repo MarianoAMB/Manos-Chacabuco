@@ -1,11 +1,11 @@
-import 'dart:io';
-
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/design_system/app_colors.dart';
 import '../../../core/design_system/app_tokens.dart';
 import '../../../core/design_system/components/app_card.dart';
+import '../../../core/design_system/components/app_file_image.dart';
+import '../../../core/design_system/components/app_inline_message.dart';
 import '../../../core/formatting/argentine_number_formatter.dart';
 import '../../../core/formatting/argentine_number_parser.dart';
 import '../../../core/money/decimal_value.dart';
@@ -79,6 +79,7 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
   String? _newPhotoSourcePath;
   bool _removePhoto = false;
   bool _dirty = false;
+  String? _dialogError;
 
   @override
   void initState() {
@@ -227,104 +228,129 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
         ),
       ),
     );
-    return Dialog(
-      insetPadding: const EdgeInsets.all(AppSpacing.md),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 900),
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.lg,
-                AppSpacing.lg,
-                AppSpacing.sm,
-                AppSpacing.md,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      widget.bundle == null
-                          ? 'Nuevo producto'
-                          : 'Editar producto',
-                      style: Theme.of(context).textTheme.headlineSmall,
+    return PopScope(
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop && await _confirmDiscard() && context.mounted) {
+          _dirty = false;
+          Navigator.pop(context, false);
+        }
+      },
+      child: Dialog(
+        insetPadding: const EdgeInsets.all(AppSpacing.md),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 900),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.lg,
+                  AppSpacing.lg,
+                  AppSpacing.sm,
+                  AppSpacing.md,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.bundle == null
+                            ? 'Nuevo producto'
+                            : 'Editar producto',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: _cancel,
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ],
+                    IconButton(
+                      onPressed: _cancel,
+                      tooltip: 'Cerrar',
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const Divider(),
-            Expanded(
-              child: compact
-                  ? content
-                  : Row(
-                      children: [
-                        Expanded(flex: 3, child: content),
-                        const VerticalDivider(),
-                        SizedBox(
-                          width: 360,
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.all(AppSpacing.lg),
-                            child: _liveSummary(),
+              const Divider(),
+              Expanded(
+                child: compact
+                    ? content
+                    : Row(
+                        children: [
+                          Expanded(flex: 3, child: content),
+                          const VerticalDivider(),
+                          SizedBox(
+                            width: 360,
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(AppSpacing.lg),
+                              child: _liveSummary(),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-            ),
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              child: compact
-                  ? Row(
-                      children: [
-                        Expanded(
-                          child: TextButton(
+                        ],
+                      ),
+              ),
+              const Divider(),
+              if (_dialogError != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.md,
+                    AppSpacing.sm,
+                    AppSpacing.md,
+                    0,
+                  ),
+                  child: AppInlineMessage(
+                    key: const Key('product-dialog-error'),
+                    message: _dialogError!,
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: compact
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: TextButton(
+                              onPressed: _cancel,
+                              child: const Text('Cancelar'),
+                            ),
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          Expanded(
+                            child: FilledButton(
+                              key: const Key('save-product'),
+                              onPressed: widget.controller.isSaving
+                                  ? null
+                                  : _save,
+                              child: const Text('Guardar'),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
                             onPressed: _cancel,
                             child: const Text('Cancelar'),
                           ),
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Expanded(
-                          child: FilledButton(
+                          const SizedBox(width: AppSpacing.sm),
+                          FilledButton.icon(
                             key: const Key('save-product'),
                             onPressed: widget.controller.isSaving
                                 ? null
                                 : _save,
-                            child: const Text('Guardar'),
+                            icon: widget.controller.isSaving
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.save_outlined),
+                            label: const Text('Guardar producto'),
                           ),
-                        ),
-                      ],
-                    )
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: _cancel,
-                          child: const Text('Cancelar'),
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        FilledButton.icon(
-                          key: const Key('save-product'),
-                          onPressed: widget.controller.isSaving ? null : _save,
-                          icon: widget.controller.isSaving
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.save_outlined),
-                          label: const Text('Guardar producto'),
-                        ),
-                      ],
-                    ),
-            ),
-          ],
+                        ],
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -402,10 +428,18 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
             'Foto',
             'Opcional. Se copia y guarda dentro de la aplicación.',
           ),
-          if (path != null && File(path).existsSync())
+          if (path != null)
             ClipRRect(
               borderRadius: BorderRadius.circular(AppRadii.md),
-              child: Image.file(File(path), height: 190, fit: BoxFit.cover),
+              child: SizedBox(
+                height: 190,
+                child: AppFileImage(
+                  path: path,
+                  cacheWidth: 1200,
+                  cacheHeight: 380,
+                  semanticLabel: 'Foto del producto',
+                ),
+              ),
             )
           else
             Container(
@@ -468,7 +502,10 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
                   icon: const Icon(Icons.edit_outlined),
                 ),
                 IconButton(
-                  onPressed: () => setState(() => _measures.removeAt(index)),
+                  onPressed: () => setState(() {
+                    _measures.removeAt(index);
+                    _dirty = true;
+                  }),
                   icon: const Icon(Icons.delete_outline_rounded),
                 ),
               ],
@@ -608,7 +645,10 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
             icon: const Icon(Icons.edit_outlined),
           ),
           IconButton(
-            onPressed: () => setState(() => _usages.removeAt(index)),
+            onPressed: () => setState(() {
+              _usages.removeAt(index);
+              _dirty = true;
+            }),
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
@@ -914,12 +954,22 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
 
   Future<void> _addMeasure() async {
     final value = await _showMeasureEditor();
-    if (value != null) setState(() => _measures.add(value));
+    if (value != null) {
+      setState(() {
+        _measures.add(value);
+        _dirty = true;
+      });
+    }
   }
 
   Future<void> _editMeasure(int index) async {
     final value = await _showMeasureEditor(_measures[index]);
-    if (value != null) setState(() => _measures[index] = value);
+    if (value != null) {
+      setState(() {
+        _measures[index] = value;
+        _dirty = true;
+      });
+    }
   }
 
   Future<_MeasureDraft?> _showMeasureEditor([_MeasureDraft? current]) async {
@@ -937,7 +987,12 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
       context: context,
       materialsController: widget.controller.materialsController,
     );
-    if (value != null) setState(() => _usages.add(value));
+    if (value != null) {
+      setState(() {
+        _usages.add(value);
+        _dirty = true;
+      });
+    }
   }
 
   Future<void> _configureGeometry() async {
@@ -947,6 +1002,7 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
       current: _geometryProfile,
     );
     if (!mounted) return;
+    if (identical(value, _geometryProfile)) return;
     setState(() {
       _geometryProfile = value;
       _dirty = true;
@@ -1040,12 +1096,23 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
       materialsController: widget.controller.materialsController,
       value: _usages[index],
     );
-    if (value != null) setState(() => _usages[index] = value);
+    if (value != null) {
+      setState(() {
+        _usages[index] = value;
+        _dirty = true;
+      });
+    }
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_categoryId == null) return;
+    if (!_formKey.currentState!.validate()) {
+      _message('Revisá los campos marcados antes de guardar.');
+      return;
+    }
+    if (_categoryId == null) {
+      _message('Elegí una categoría.');
+      return;
+    }
     if (_usages.isEmpty) {
       _message('Agregá al menos una materia prima.');
       return;
@@ -1120,13 +1187,16 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
     return '${ArgentineNumberFormatter.decimal(quantity.amount)} ${unit?.symbol ?? ''}';
   }
 
-  void _message(String message) =>
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
+  void _message(String message) {
+    if (mounted) setState(() => _dialogError = message);
+  }
 
   Future<void> _cancel() async {
     if (!_dirty || await _confirmDiscard()) {
-      if (mounted) Navigator.pop(context, false);
+      if (mounted) {
+        _dirty = false;
+        Navigator.pop(context, false);
+      }
     }
   }
 
@@ -1134,8 +1204,10 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
       await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('¿Descartar los cambios?'),
-          content: const Text('Lo que completaste no se guardará.'),
+          title: const Text('Tenés cambios sin guardar'),
+          content: const Text(
+            'Si salís ahora, los cambios de este producto no se guardarán.',
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -1143,7 +1215,7 @@ final class _ProductEditorDialogState extends State<_ProductEditorDialog> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Descartar'),
+              child: const Text('Salir sin guardar'),
             ),
           ],
         ),
@@ -1167,6 +1239,7 @@ final class _ProductMeasureEditorDialogState
   late final TextEditingController _name;
   late final TextEditingController _amount;
   late String? _unitId;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -1241,6 +1314,13 @@ final class _ProductMeasureEditorDialogState
                   ),
                 ],
               ),
+              if (_errorMessage != null) ...[
+                const SizedBox(height: AppSpacing.md),
+                AppInlineMessage(
+                  key: const Key('product-measure-error'),
+                  message: _errorMessage!,
+                ),
+              ],
             ],
           ),
         ),
@@ -1257,6 +1337,17 @@ final class _ProductMeasureEditorDialogState
                 parsed == null ||
                 parsed.scaledValue < 0 ||
                 _unitId == null) {
+              setState(() {
+                if (_name.text.trim().isEmpty) {
+                  _errorMessage = 'Escribí el nombre de la medida.';
+                } else if (parsed == null) {
+                  _errorMessage = 'Ingresá un valor válido.';
+                } else if (parsed.scaledValue < 0) {
+                  _errorMessage = 'El valor no puede ser negativo.';
+                } else {
+                  _errorMessage = 'Elegí una unidad.';
+                }
+              });
               return;
             }
             Navigator.pop(
@@ -1305,6 +1396,7 @@ final class _ProductUsageEditorState extends State<_ProductUsageEditor> {
   ProductMaterialRole _role = ProductMaterialRole.primary;
   ConsumptionSource _consumptionSource = ConsumptionSource.manual;
   bool _calibrationEligible = true;
+  String? _errorMessage;
 
   MaterialBundle? get _material => widget.materialsController.materials
       .where((item) => item.material.metadata.id == _materialId)
@@ -1510,6 +1602,13 @@ final class _ProductUsageEditorState extends State<_ProductUsageEditor> {
                 decoration: const InputDecoration(labelText: 'Nota (opcional)'),
                 maxLines: 2,
               ),
+              if (_errorMessage != null) ...[
+                const SizedBox(height: AppSpacing.md),
+                AppInlineMessage(
+                  key: const Key('product-usage-error'),
+                  message: _errorMessage!,
+                ),
+              ],
             ],
           ),
         ),
@@ -1527,13 +1626,17 @@ final class _ProductUsageEditorState extends State<_ProductUsageEditor> {
                 _unitId == null ||
                 amount == null ||
                 amount.scaledValue <= 0) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    'Completá el material y una cantidad mayor que cero.',
-                  ),
-                ),
-              );
+              setState(() {
+                if (_materialId == null) {
+                  _errorMessage = 'Elegí una materia prima.';
+                } else if (amount == null) {
+                  _errorMessage = 'Ingresá una cantidad válida.';
+                } else if (amount.scaledValue <= 0) {
+                  _errorMessage = 'La cantidad debe ser mayor que cero.';
+                } else {
+                  _errorMessage = 'Elegí una unidad compatible.';
+                }
+              });
               return;
             }
             Navigator.pop(

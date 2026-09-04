@@ -6,8 +6,10 @@ import '../core/design_system/components/app_empty_state.dart';
 import '../features/materials/application/materials_controller.dart';
 import '../features/importing/application/historical_import_controller.dart';
 import '../features/products/application/products_controller.dart';
+import '../features/price_lists/application/price_lists_controller.dart';
 import '../features/quotes/application/quotes_controller.dart';
 import '../features/settings/application/settings_controller.dart';
+import '../features/sync/application/sync_controller.dart';
 import 'shell/adaptive_app_shell.dart';
 
 final class ManosChacabucoApp extends StatelessWidget {
@@ -16,7 +18,9 @@ final class ManosChacabucoApp extends StatelessWidget {
     required this.materialsController,
     required this.productsController,
     required this.quotesController,
+    this.priceListsController,
     this.importController,
+    this.syncController,
     super.key,
   });
 
@@ -24,7 +28,9 @@ final class ManosChacabucoApp extends StatelessWidget {
   final MaterialsController materialsController;
   final ProductsController productsController;
   final QuotesController quotesController;
+  final PriceListsController? priceListsController;
   final HistoricalImportController? importController;
+  final SyncController? syncController;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -45,16 +51,44 @@ final class ManosChacabucoApp extends StatelessWidget {
         materialsController: materialsController,
         productsController: productsController,
         quotesController: quotesController,
+        priceListsController: priceListsController,
         importController: importController,
+        syncController: syncController,
+      ),
+    ),
+  );
+}
+
+final class BootstrapLoadingApp extends StatelessWidget {
+  const BootstrapLoadingApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Manos Chacabuco',
+    debugShowCheckedModeBanner: false,
+    theme: AppTheme.light,
+    home: const Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 24),
+              Text(
+                'Preparando tus datos…',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        ),
       ),
     ),
   );
 }
 
 final class BootstrapFailureApp extends StatelessWidget {
-  const BootstrapFailureApp({required this.error, super.key});
-
-  final Object error;
+  const BootstrapFailureApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -67,7 +101,7 @@ final class BootstrapFailureApp extends StatelessWidget {
         title: 'No pudimos abrir tus datos locales',
         message:
             'Cerrá y volvé a abrir la aplicación. Tus datos no fueron borrados. '
-            'Si el problema continúa, compartí este detalle: $error',
+            'Si el problema continúa, pedí ayuda indicando que la app no pudo iniciar.',
       ),
     ),
   );

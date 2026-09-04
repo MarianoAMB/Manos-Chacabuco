@@ -62,8 +62,10 @@ final class SqliteMaterialCatalogRepository
       ),
     );
     if ((usage ?? 0) > 0) throw const CategoryInUseException();
-    await _appDatabase.database.delete(
+    final timestamp = DateTime.now().toUtc().toIso8601String();
+    await _appDatabase.database.update(
       'material_categories',
+      {'deleted_at': timestamp, 'updated_at': timestamp},
       where: 'id = ?',
       whereArgs: [id],
     );

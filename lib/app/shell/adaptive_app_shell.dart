@@ -9,10 +9,13 @@ import '../../features/importing/application/historical_import_controller.dart';
 import '../../features/materials/presentation/materials_screen.dart';
 import '../../features/products/application/products_controller.dart';
 import '../../features/products/presentation/products_screen.dart';
+import '../../features/price_lists/application/price_lists_controller.dart';
+import '../../features/price_lists/presentation/price_lists_screen.dart';
 import '../../features/quotes/application/quotes_controller.dart';
 import '../../features/quotes/presentation/quotes_screen.dart';
 import '../../features/settings/application/settings_controller.dart';
 import '../../features/settings/presentation/settings_screen.dart';
+import '../../features/sync/application/sync_controller.dart';
 import '../../features/shared/presentation/module_placeholder_screen.dart';
 import '../navigation/app_destination.dart';
 
@@ -22,7 +25,9 @@ final class AdaptiveAppShell extends StatefulWidget {
     required this.materialsController,
     required this.productsController,
     required this.quotesController,
+    this.priceListsController,
     this.importController,
+    this.syncController,
     super.key,
   });
 
@@ -30,21 +35,29 @@ final class AdaptiveAppShell extends StatefulWidget {
   final MaterialsController materialsController;
   final ProductsController productsController;
   final QuotesController quotesController;
+  final PriceListsController? priceListsController;
   final HistoricalImportController? importController;
+  final SyncController? syncController;
 
   @override
   State<AdaptiveAppShell> createState() => _AdaptiveAppShellState();
 }
 
 final class _AdaptiveAppShellState extends State<AdaptiveAppShell> {
+  final _settingsKey = GlobalKey<SettingsScreenState>();
   AppDestination _selected = AppDestination.home;
   bool _createMaterialRequested = false;
   bool _createProductRequested = false;
   bool _createQuoteRequested = false;
   ProductBundle? _initialQuoteProduct;
 
-  void _select(AppDestination destination) {
+  Future<void> _select(AppDestination destination) async {
     if (destination == _selected) return;
+    if (_selected == AppDestination.settings) {
+      final canLeave =
+          await _settingsKey.currentState?.confirmNavigation() ?? true;
+      if (!canLeave || !mounted) return;
+    }
     setState(() => _selected = destination);
   }
 
@@ -123,12 +136,21 @@ final class _AdaptiveAppShellState extends State<AdaptiveAppShell> {
     AppDestination.calculator => CalculatorScreen(
       controller: widget.productsController,
     ),
+    AppDestination.priceLists =>
+      widget.priceListsController == null
+          ? ModulePlaceholderScreen(destination: AppDestination.priceLists)
+          : PriceListsScreen(
+              controller: widget.priceListsController!,
+              onOpenProducts: () => _select(AppDestination.products),
+              onOpenSettings: () => _select(AppDestination.settings),
+            ),
     AppDestination.settings => SettingsScreen(
+      key: _settingsKey,
       controller: widget.settingsController,
       importController: widget.importController,
       onOpenProducts: () => _select(AppDestination.products),
+      syncController: widget.syncController,
     ),
-    final destination => ModulePlaceholderScreen(destination: destination),
   };
 
   @override
@@ -171,7 +193,7 @@ final class _AdaptiveAppShellState extends State<AdaptiveAppShell> {
   }
 
   String _mobileLabel(AppDestination destination) => switch (destination) {
-    AppDestination.materials => 'Materiales',
+    AppDestination.materials => 'Materias',
     AppDestination.quotes => 'Presup.',
     _ => destination.label,
   };
@@ -251,7 +273,7 @@ final class _AdaptiveAppShellState extends State<AdaptiveAppShell> {
                       ),
                       const SizedBox(width: AppSpacing.xs),
                       Text(
-                        'Lista para trabajar sin conexión',
+                        'Disponible sin conexión',
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ],

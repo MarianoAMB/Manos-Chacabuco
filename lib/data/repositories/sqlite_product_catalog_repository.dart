@@ -73,8 +73,10 @@ final class SqliteProductCatalogRepository implements ProductCatalogRepository {
       ),
     );
     if ((usage ?? 0) > 0) throw const ProductCategoryInUseException();
-    await _appDatabase.database.delete(
+    final timestamp = DateTime.now().toUtc().toIso8601String();
+    await _appDatabase.database.update(
       'product_categories',
+      {'deleted_at': timestamp, 'updated_at': timestamp},
       where: 'id = ?',
       whereArgs: [id],
     );

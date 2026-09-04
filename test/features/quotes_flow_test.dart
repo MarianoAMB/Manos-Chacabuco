@@ -155,7 +155,10 @@ void main() {
       'Decoraciones Luna',
     );
     await tester.enterText(find.byKey(const Key('quote-validity-days')), '15');
-    expect(find.textContaining('17/09/2026'), findsOneWidget);
+    await tester.pump();
+    final expectedValidUntil = harness.quotesController.engine
+        .calculateValidUntil(harness.quotesController.today, 15);
+    expect(find.textContaining(_date(expectedValidUntil)), findsOneWidget);
     await tester.tap(find.byKey(const Key('next-quote-step')));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull, reason: 'alta paso Productos');
@@ -372,3 +375,7 @@ void main() {
     expect(harness.quotesController.quotes, hasLength(2));
   });
 }
+
+String _date(DateTime value) =>
+    '${value.day.toString().padLeft(2, '0')}/'
+    '${value.month.toString().padLeft(2, '0')}/${value.year}';

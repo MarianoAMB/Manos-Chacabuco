@@ -11,6 +11,7 @@ final class AppSettings {
     this.defaultRetailPercentage,
     this.defaultProductMultiplier,
     this.minimumWholesaleAmount,
+    this.businessLogoPath,
   });
 
   factory AppSettings.defaults({DateTime? now}) => AppSettings(
@@ -28,6 +29,7 @@ final class AppSettings {
   final DecimalValue? defaultRetailPercentage;
   final DecimalValue? defaultProductMultiplier;
   final Money? minimumWholesaleAmount;
+  final String? businessLogoPath;
   final DateTime updatedAt;
 
   AppSettings copyWith({
@@ -41,6 +43,8 @@ final class AppSettings {
     bool clearDefaultProductMultiplier = false,
     Money? minimumWholesaleAmount,
     bool clearMinimumWholesaleAmount = false,
+    String? businessLogoPath,
+    bool clearBusinessLogoPath = false,
     DateTime? updatedAt,
   }) => AppSettings(
     businessName: businessName ?? this.businessName,
@@ -58,6 +62,9 @@ final class AppSettings {
     minimumWholesaleAmount: clearMinimumWholesaleAmount
         ? null
         : minimumWholesaleAmount ?? this.minimumWholesaleAmount,
+    businessLogoPath: clearBusinessLogoPath
+        ? null
+        : businessLogoPath ?? this.businessLogoPath,
     updatedAt: updatedAt ?? this.updatedAt,
   );
 
@@ -69,6 +76,7 @@ final class AppSettings {
     'defaultRetailPercentage': defaultRetailPercentage?.scaledValue,
     'defaultProductMultiplier': defaultProductMultiplier?.scaledValue,
     'minimumWholesaleMinorUnits': minimumWholesaleAmount?.minorUnits,
+    'businessLogoPath': businessLogoPath,
     'updatedAt': updatedAt.toUtc().toIso8601String(),
   };
 
@@ -96,6 +104,7 @@ final class AppSettings {
       ),
       _ => null,
     },
+    businessLogoPath: json['businessLogoPath'] as String?,
     updatedAt: DateTime.parse(json['updatedAt']! as String),
   );
 }

@@ -1,7 +1,7 @@
 import 'package:sqflite/sqflite.dart' show Database;
 
 abstract final class DatabaseMigrations {
-  static const currentVersion = 6;
+  static const currentVersion = 8;
 
   static Future<void> migrate(
     Database database,
@@ -25,6 +25,12 @@ abstract final class DatabaseMigrations {
     }
     if (fromVersion < 6 && toVersion >= 6) {
       await _upgradeToVersion6(database);
+    }
+    if (fromVersion < 7 && toVersion >= 7) {
+      await _upgradeToVersion7(database);
+    }
+    if (fromVersion < 8 && toVersion >= 8) {
+      await _upgradeToVersion8(database);
     }
   }
 
@@ -530,4 +536,192 @@ abstract final class DatabaseMigrations {
     );
     await batch.commit(noResult: true);
   }
+
+  static Future<void> _upgradeToVersion7(Database database) async {
+    final batch = database.batch();
+    batch.execute(
+      'ALTER TABLE app_settings ADD COLUMN business_logo_path TEXT',
+    );
+    batch.execute('''
+      CREATE TABLE price_list_preferences (
+        price_type TEXT PRIMARY KEY,
+        config_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await batch.commit(noResult: true);
+  }
+
+  static Future<void> _upgradeToVersion8(Database database) async {
+    final batch = database.batch();
+    batch.execute('''
+      CREATE TABLE sync_runtime (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        remote_apply INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    batch.rawInsert(
+      'INSERT INTO sync_runtime (singleton_id, remote_apply) VALUES (1, 0)',
+    );
+    batch.execute('''
+      CREATE TABLE sync_entity_state (
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        base_revision TEXT,
+        base_hash TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'pendingUpload',
+        error_message TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (entity_type, entity_id)
+      )
+    ''');
+    batch.execute('''
+      CREATE TABLE sync_conflicts (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        local_payload_json TEXT NOT NULL,
+        remote_envelope_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      )
+    ''');
+    batch.execute('''
+      CREATE TABLE sync_remote_changes (
+        change_id TEXT PRIMARY KEY,
+        revision TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      )
+    ''');
+    batch.execute('''
+      CREATE TABLE sync_account (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        email TEXT,
+        connected INTEGER NOT NULL DEFAULT 0,
+        last_sync_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    batch.execute(
+      'CREATE INDEX idx_sync_outbox_entity ON sync_outbox(entity_type, entity_id, acknowledged_at)',
+    );
+    batch.execute(
+      'CREATE INDEX idx_sync_conflicts_pending ON sync_conflicts(resolved_at, created_at)',
+    );
+
+    const timestamp = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+    const id = 'lower(hex(randomblob(16)))';
+    const bootstrap = <(String, String, String)>[
+      ('app_settings', 'appSettings', "'singleton'"),
+      ('measurement_units', 'measurementUnit', 'id'),
+      ('material_categories', 'materialCategory', 'id'),
+      ('materials', 'material', 'id'),
+      ('product_categories', 'productCategory', 'id'),
+      ('products', 'product', 'id'),
+      ('quotes', 'quote', 'id'),
+      ('price_list_preferences', 'priceListPreference', 'price_type'),
+      ('import_records', 'importRecord', 'id'),
+      ('import_reports', 'importReport', 'id'),
+    ];
+    for (final entry in bootstrap) {
+      batch.execute('''
+        INSERT INTO sync_outbox
+          (id, entity_type, entity_id, operation, payload_json, occurred_at)
+        SELECT $id, '${entry.$2}', ${entry.$3}, 'upsert', '{}', $timestamp
+        FROM ${entry.$1}
+      ''');
+    }
+    await batch.commit(noResult: true);
+
+    await _createSyncTriggers(database);
+  }
+
+  static Future<void> _createSyncTriggers(Database database) async {
+    const definitions = <_SyncTriggerDefinition>[
+      _SyncTriggerDefinition('app_settings', 'appSettings', "'singleton'"),
+      _SyncTriggerDefinition('measurement_units', 'measurementUnit', 'id'),
+      _SyncTriggerDefinition('material_categories', 'materialCategory', 'id'),
+      _SyncTriggerDefinition('materials', 'material', 'id'),
+      _SyncTriggerDefinition(
+        'material_variants',
+        'material',
+        'material_id',
+        child: true,
+      ),
+      _SyncTriggerDefinition('product_categories', 'productCategory', 'id'),
+      _SyncTriggerDefinition('products', 'product', 'id'),
+      _SyncTriggerDefinition(
+        'product_material_usages',
+        'product',
+        'product_id',
+        child: true,
+      ),
+      _SyncTriggerDefinition('quotes', 'quote', 'id'),
+      _SyncTriggerDefinition('quote_items', 'quote', 'quote_id', child: true),
+      _SyncTriggerDefinition(
+        'quote_adjustments',
+        'quote',
+        'quote_id',
+        child: true,
+      ),
+      _SyncTriggerDefinition(
+        'price_list_preferences',
+        'priceListPreference',
+        'price_type',
+      ),
+      _SyncTriggerDefinition('import_records', 'importRecord', 'id'),
+      _SyncTriggerDefinition('import_reports', 'importReport', 'id'),
+    ];
+    for (final definition in definitions) {
+      await _createTriggersFor(database, definition);
+    }
+  }
+
+  static Future<void> _createTriggersFor(
+    Database database,
+    _SyncTriggerDefinition definition,
+  ) async {
+    final safeName = definition.table.replaceAll(RegExp(r'[^a-z_]'), '');
+    for (final event in const ['INSERT', 'UPDATE', 'DELETE']) {
+      final row = event == 'DELETE' ? 'OLD' : 'NEW';
+      final entityId = definition.idExpression.startsWith("'")
+          ? definition.idExpression
+          : '$row.${definition.idExpression}';
+      final operation = event == 'DELETE' && !definition.child
+          ? "'delete'"
+          : "'upsert'";
+      await database.execute('''
+        CREATE TRIGGER sync_${safeName}_${event.toLowerCase()}
+        AFTER $event ON ${definition.table}
+        WHEN (SELECT remote_apply FROM sync_runtime WHERE singleton_id = 1) = 0
+        BEGIN
+          INSERT INTO sync_outbox
+            (id, entity_type, entity_id, operation, payload_json, occurred_at)
+          VALUES (
+            lower(hex(randomblob(16))),
+            '${definition.entityType}',
+            $entityId,
+            $operation,
+            '{}',
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          );
+        END
+      ''');
+    }
+  }
+}
+
+final class _SyncTriggerDefinition {
+  const _SyncTriggerDefinition(
+    this.table,
+    this.entityType,
+    this.idExpression, {
+    this.child = false,
+  });
+
+  final String table;
+  final String entityType;
+  final String idExpression;
+  final bool child;
 }

@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/test_app_harness.dart';
 
 void main() {
-  for (final size in const [Size(320, 700), Size(390, 844)]) {
+  for (final size in const [Size(320, 700), Size(390, 844), Size(768, 900)]) {
     testWidgets('se adapta sin desbordes en móvil ${size.width.toInt()} px', (
       tester,
     ) async {
@@ -24,6 +24,18 @@ void main() {
       await tester.tap(
         find.descendant(
           of: find.byType(NavigationBar),
+          matching: find.text('Más'),
+        ),
+      );
+      await _pumpTransition(tester, milliseconds: 300);
+      await tester.tap(find.text('Listas de precios').last);
+      await _pumpTransition(tester);
+      expect(find.text('Crear lista minorista'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(NavigationBar),
           matching: find.text('Productos'),
         ),
       );
@@ -34,7 +46,7 @@ void main() {
       await tester.tap(
         find.descendant(
           of: find.byType(NavigationBar),
-          matching: find.text('Materiales'),
+          matching: find.text('Materias'),
         ),
       );
       await _pumpTransition(tester);
@@ -102,6 +114,16 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(NavigationRail),
+          matching: find.text('Listas de precios'),
+        ),
+      );
+      await _pumpTransition(tester);
+      expect(find.text('Crear lista mayorista'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       await tester.tap(

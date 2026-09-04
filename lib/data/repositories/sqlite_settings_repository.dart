@@ -44,6 +44,7 @@ final class SqliteSettingsRepository implements SettingsRepository {
     'default_retail_scaled': settings.defaultRetailPercentage?.scaledValue,
     'default_multiplier_scaled': settings.defaultProductMultiplier?.scaledValue,
     'minimum_wholesale_minor': settings.minimumWholesaleAmount?.minorUnits,
+    'business_logo_path': settings.businessLogoPath,
     'updated_at': settings.updatedAt.toUtc().toIso8601String(),
   };
 
@@ -71,6 +72,7 @@ final class SqliteSettingsRepository implements SettingsRepository {
       ),
       _ => null,
     },
+    businessLogoPath: row['business_logo_path'] as String?,
     updatedAt: DateTime.parse(row['updated_at']! as String),
   );
 }

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -5,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../../core/design_system/app_colors.dart';
 import '../../../core/design_system/app_tokens.dart';
 import '../../../core/design_system/components/app_card.dart';
+import '../../../core/design_system/components/app_inline_message.dart';
 import '../../../core/formatting/argentine_number_formatter.dart';
 import '../../../core/formatting/argentine_number_parser.dart';
 import '../../../core/money/decimal_value.dart';
@@ -55,6 +58,7 @@ final class _QuoteEditorDialog extends StatefulWidget {
 
 final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
   final _customer = TextEditingController();
+  final _customerFocus = FocusNode();
   final _validityDays = TextEditingController();
   final _notes = TextEditingController();
   late DateTime _date;
@@ -62,8 +66,12 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
   late QuotePriceType _priceType;
   late List<QuoteItemFormValue> _items;
   late List<QuoteAdjustmentFormValue> _generalAdjustments;
+  late final String _initialSignature;
   int _step = 0;
   bool _saving = false;
+  bool _allowPop = false;
+  String? _customerError;
+  String? _dialogError;
 
   DateFormat get _dateFormat => DateFormat('dd/MM/yyyy', 'es_AR');
 
@@ -87,11 +95,58 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
       _items.add(widget.controller.itemFromProduct(widget.initialProduct!));
     }
     _generalAdjustments = [...?existing?.generalAdjustments];
+    for (final controller in [_customer, _validityDays, _notes]) {
+      controller.addListener(_refreshDirtyState);
+    }
+    _initialSignature = _currentSignature;
   }
+
+  void _refreshDirtyState() {
+    if (mounted) setState(() {});
+  }
+
+  bool get _hasUnsavedChanges => _currentSignature != _initialSignature;
+
+  String get _currentSignature => jsonEncode({
+    'customer': _customer.text,
+    'date': _date.toIso8601String(),
+    'validityDays': _validityDays.text,
+    'validUntil': _validUntil.toIso8601String(),
+    'priceType': _priceType.name,
+    'notes': _notes.text,
+    'items': [
+      for (final item in _items)
+        {
+          'id': item.id,
+          'sourceProductId': item.sourceProductId,
+          'quantity': item.quantity,
+          'configuration': item.configurationSignature,
+          'adjustments': [
+            for (final adjustment in item.adjustments)
+              [
+                adjustment.id,
+                adjustment.description,
+                adjustment.amount.minorUnits,
+                adjustment.amount.currency,
+              ],
+          ],
+        },
+    ],
+    'generalAdjustments': [
+      for (final adjustment in _generalAdjustments)
+        [
+          adjustment.id,
+          adjustment.description,
+          adjustment.amount.minorUnits,
+          adjustment.amount.currency,
+        ],
+    ],
+  });
 
   @override
   void dispose() {
     _customer.dispose();
+    _customerFocus.dispose();
     _validityDays.dispose();
     _notes.dispose();
     super.dispose();
@@ -122,8 +177,19 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
         _footer(compact),
       ],
     );
-    if (compact) return Dialog.fullscreen(child: SafeArea(child: body));
-    return Dialog(child: SizedBox(width: 920, height: 760, child: body));
+    final dialog = compact
+        ? Dialog.fullscreen(child: SafeArea(child: body))
+        : Dialog(child: SizedBox(width: 920, height: 760, child: body));
+    return PopScope(
+      canPop: _allowPop || !_hasUnsavedChanges,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop && await _confirmDiscardQuote() && context.mounted) {
+          _allowPop = true;
+          Navigator.pop(context);
+        }
+      },
+      child: dialog,
+    );
   }
 
   Widget _header(bool compact) => Padding(
@@ -153,7 +219,7 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
         ),
         IconButton(
           tooltip: 'Cerrar',
-          onPressed: _saving ? null : () => Navigator.pop(context),
+          onPressed: _saving ? null : _cancelQuote,
           icon: const Icon(Icons.close_rounded),
         ),
       ],
@@ -175,8 +241,16 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
       TextField(
         key: const Key('quote-customer'),
         controller: _customer,
-        decoration: const InputDecoration(labelText: 'Nombre del cliente'),
+        focusNode: _customerFocus,
+        decoration: InputDecoration(
+          labelText: 'Nombre del cliente',
+          errorText: _customerError,
+        ),
         textCapitalization: TextCapitalization.words,
+        onChanged: (_) => setState(() {
+          _customerError = null;
+          _dialogError = null;
+        }),
       ),
       const SizedBox(height: AppSpacing.md),
       LayoutBuilder(
@@ -246,8 +320,25 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
           ),
         ],
         selected: {_priceType},
-        onSelectionChanged: (value) => setState(() => _priceType = value.first),
+        onSelectionChanged: (value) => setState(() {
+          _priceType = value.first;
+          _dialogError = null;
+        }),
       ),
+      if (_priceType == QuotePriceType.retail &&
+          _firstCalculationError != null) ...[
+        const SizedBox(height: AppSpacing.md),
+        AppInlineMessage(
+          key: const Key('quote-price-warning'),
+          message: _firstCalculationError!,
+          tone: AppInlineMessageTone.warning,
+          actionLabel: 'Usar mayorista',
+          onAction: () => setState(() {
+            _priceType = QuotePriceType.wholesale;
+            _dialogError = null;
+          }),
+        ),
+      ],
     ],
   );
 
@@ -293,6 +384,7 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
     final item = _items[index];
     Money? unit;
     Money? subtotal;
+    String? calculationError;
     try {
       if (item.existingSnapshot != null) {
         final base = item.existingSnapshot!.priceFor(_priceType);
@@ -310,7 +402,9 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
         unit = result.finalUnitPrice;
         subtotal = result.subtotal;
       }
-    } catch (_) {}
+    } catch (error) {
+      calculationError = _priceError(error);
+    }
     return AppCard(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -341,7 +435,15 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
                     ),
                   )
                 else
-                  const Text('Completá materiales y reglas de precio.'),
+                  Text(
+                    calculationError ??
+                        'Este producto no tiene un precio calculable.',
+                    key: Key('quote-item-error-$index'),
+                    style: const TextStyle(
+                      color: AppColors.danger,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -362,9 +464,12 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
 
   Widget _summaryStep() {
     Money? total;
+    String? calculationError;
     try {
       total = widget.controller.calculateDraftTotal(_value());
-    } catch (_) {}
+    } catch (error) {
+      calculationError = _priceError(error);
+    }
     final minimum =
         widget.controller.settingsController.settings.minimumWholesaleAmount;
     final belowMinimum =
@@ -389,6 +494,23 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
             ],
           ),
         ),
+        if (calculationError != null) ...[
+          const SizedBox(height: AppSpacing.md),
+          AppInlineMessage(
+            key: const Key('quote-summary-error'),
+            message: calculationError,
+            actionLabel: _priceType == QuotePriceType.retail
+                ? 'Volver y usar mayorista'
+                : null,
+            onAction: _priceType == QuotePriceType.retail
+                ? () => setState(() {
+                    _priceType = QuotePriceType.wholesale;
+                    _step = 1;
+                    _dialogError = null;
+                  })
+                : null,
+          ),
+        ],
         const SizedBox(height: AppSpacing.md),
         Row(
           children: [
@@ -476,6 +598,7 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
   Widget _summaryItem(QuoteItemFormValue item) {
     Money? unit;
     Money? subtotal;
+    String? calculationError;
     try {
       if (item.existingSnapshot != null) {
         var resolvedUnit = item.existingSnapshot!.priceFor(_priceType);
@@ -492,13 +615,15 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
         unit = result.finalUnitPrice;
         subtotal = result.subtotal;
       }
-    } catch (_) {}
+    } catch (error) {
+      calculationError = _priceError(error);
+    }
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text('${item.quantity} × ${item.name}'),
       subtitle: Text(
         unit == null
-            ? 'Revisar cálculo'
+            ? calculationError ?? 'No se pudo calcular el precio.'
             : '${ArgentineNumberFormatter.money(unit)} c/u',
       ),
       trailing: Text(
@@ -510,40 +635,64 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
 
   Widget _footer(bool compact) => Padding(
     padding: EdgeInsets.all(compact ? AppSpacing.sm : AppSpacing.md),
-    child: Row(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        TextButton(
-          onPressed: _saving
-              ? null
-              : _step == 0
-              ? () => Navigator.pop(context)
-              : () => setState(() => _step--),
-          child: Text(_step == 0 ? 'Cancelar' : 'Atrás'),
-        ),
-        const Spacer(),
-        FilledButton.icon(
-          key: Key(_step == 2 ? 'save-quote' : 'next-quote-step'),
-          onPressed: _saving ? null : _next,
-          icon: _saving
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Icon(
-                  _step == 2
-                      ? Icons.save_outlined
-                      : Icons.arrow_forward_rounded,
-                ),
-          label: Text(
-            compact
-                ? _step == 2
-                      ? 'Guardar'
-                      : 'Siguiente'
-                : _step == 2
-                ? 'Guardar presupuesto'
-                : 'Continuar',
+        if (_dialogError != null) ...[
+          AppInlineMessage(
+            key: const Key('quote-dialog-error'),
+            message: _dialogError!,
+            actionLabel: _priceType == QuotePriceType.retail && _step > 0
+                ? 'Usar mayorista'
+                : null,
+            onAction: _priceType == QuotePriceType.retail && _step > 0
+                ? () => setState(() {
+                    _priceType = QuotePriceType.wholesale;
+                    _dialogError = null;
+                  })
+                : null,
           ),
+          const SizedBox(height: AppSpacing.sm),
+        ],
+        Row(
+          children: [
+            TextButton(
+              onPressed: _saving
+                  ? null
+                  : _step == 0
+                  ? _cancelQuote
+                  : () => setState(() {
+                      _step--;
+                      _dialogError = null;
+                    }),
+              child: Text(_step == 0 ? 'Cancelar' : 'Atrás'),
+            ),
+            const Spacer(),
+            FilledButton.icon(
+              key: Key(_step == 2 ? 'save-quote' : 'next-quote-step'),
+              onPressed: _saving ? null : _next,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      _step == 2
+                          ? Icons.save_outlined
+                          : Icons.arrow_forward_rounded,
+                    ),
+              label: Text(
+                compact
+                    ? _step == 2
+                          ? 'Guardar'
+                          : 'Siguiente'
+                    : _step == 2
+                    ? 'Guardar presupuesto'
+                    : 'Continuar',
+              ),
+            ),
+          ],
         ),
       ],
     ),
@@ -551,21 +700,43 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
 
   Future<void> _next() async {
     if (_step == 0 && _customer.text.trim().isEmpty) {
-      _message('Ingresá el nombre del cliente.');
+      setState(() {
+        _customerError = 'Ingresá el nombre del cliente';
+        _dialogError = 'Falta el nombre del cliente para continuar.';
+      });
+      _customerFocus.requestFocus();
+      return;
+    }
+    if (_step == 0 && (int.tryParse(_validityDays.text) ?? 0) <= 0) {
+      _message('La validez debe ser de al menos 1 día.');
       return;
     }
     if (_step == 1 && _items.isEmpty) {
       _message('Agregá al menos un producto.');
       return;
     }
+    if (_step == 1) {
+      try {
+        widget.controller.calculateDraftTotal(_value());
+      } catch (error) {
+        _message(_priceError(error));
+        return;
+      }
+    }
     if (_step < 2) {
-      setState(() => _step++);
+      setState(() {
+        _step++;
+        _dialogError = null;
+      });
       return;
     }
     setState(() => _saving = true);
     try {
       final saved = await widget.controller.save(_value());
-      if (mounted) Navigator.pop(context, saved);
+      if (mounted) {
+        _allowPop = true;
+        Navigator.pop(context, saved);
+      }
     } catch (error) {
       if (mounted) _message(_friendlyError(error));
     } finally {
@@ -604,6 +775,7 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
     final days = int.tryParse(source);
     if (days == null) return;
     setState(() {
+      _dialogError = null;
       _validUntil = widget.controller.engine.calculateValidUntil(_date, days);
     });
   }
@@ -717,9 +889,58 @@ final class _QuoteEditorDialogState extends State<_QuoteEditorDialog> {
     _ => 'No pudimos completar la acción. Revisá los datos.',
   };
 
-  void _message(String message) =>
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
+  String _priceError(Object error) {
+    final message = _friendlyError(error);
+    if (message.contains('porcentaje minorista')) {
+      return 'No hay precio minorista: falta definir el porcentaje minorista. Podés usar Mayorista o configurarlo para este producto.';
+    }
+    return message;
+  }
+
+  String? get _firstCalculationError {
+    if (_items.isEmpty) return null;
+    try {
+      widget.controller.calculateDraftTotal(_value());
+      return null;
+    } catch (error) {
+      return _priceError(error);
+    }
+  }
+
+  void _message(String message) {
+    if (mounted) setState(() => _dialogError = message);
+  }
+
+  Future<void> _cancelQuote() async {
+    if (!_hasUnsavedChanges || await _confirmDiscardQuote()) {
+      if (mounted) {
+        _allowPop = true;
+        Navigator.pop(context);
+      }
+    }
+  }
+
+  Future<bool> _confirmDiscardQuote() async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Tenés cambios sin guardar'),
+          content: const Text(
+            'Si salís ahora, los cambios de este presupuesto no se guardarán.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Seguir editando'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Salir sin guardar'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
 }
 
 final class _DateField extends StatelessWidget {
@@ -801,6 +1022,9 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
   late List<ProductUsageFormValue> _usages;
   late List<QuoteAdjustmentFormValue> _adjustments;
   GeometryProfile? _geometryProfile;
+  late final String _initialSignature;
+  bool _allowPop = false;
+  String? _dialogError;
 
   @override
   void initState() {
@@ -849,11 +1073,61 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
     ]) {
       controller.addListener(_refresh);
     }
+    _initialSignature = _currentSignature;
   }
 
   void _refresh() {
     if (mounted) setState(() {});
   }
+
+  bool get _hasUnsavedChanges => _currentSignature != _initialSignature;
+
+  String get _currentSignature => jsonEncode({
+    'name': _name.text,
+    'description': _description.text,
+    'personalization': _personalization.text,
+    'quantity': _quantity.text,
+    'multiplier': _multiplier.text,
+    'waste': _waste.text,
+    'thread': _thread.text,
+    'retail': _retail.text,
+    'categoryId': _categoryId,
+    'overrideWaste': _overrideWaste,
+    'overrideThread': _overrideThread,
+    'overrideRetail': _overrideRetail,
+    'measures': [
+      for (final measure in _measures)
+        [
+          measure.name,
+          measure.quantity.amount.scaledValue,
+          measure.quantity.unitId,
+        ],
+    ],
+    'geometry': _geometryProfile?.toJson(),
+    'usages': [
+      for (final usage in _usages)
+        [
+          usage.id,
+          usage.materialId,
+          usage.materialVariantId,
+          usage.consumption.amount.scaledValue,
+          usage.consumption.unitId,
+          usage.role.name,
+          usage.consumptionSource.name,
+          usage.calibrationEligible,
+          usage.notes,
+        ],
+    ],
+    'adjustments': [
+      for (final adjustment in _adjustments)
+        [
+          adjustment.id,
+          adjustment.description,
+          adjustment.amount.minorUnits,
+          adjustment.amount.currency,
+        ],
+    ],
+  });
 
   @override
   void dispose() {
@@ -935,7 +1209,8 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
                 ),
               ),
               IconButton(
-                onPressed: () => Navigator.pop(context),
+                onPressed: _cancelItem,
+                tooltip: 'Cerrar',
                 icon: const Icon(Icons.close_rounded),
               ),
             ],
@@ -966,27 +1241,49 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
         const Divider(height: 1),
         Padding(
           padding: const EdgeInsets.all(AppSpacing.md),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancelar'),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              FilledButton(
-                key: const Key('save-quote-item'),
-                onPressed: _save,
-                child: const Text('Aceptar'),
+              if (_dialogError != null) ...[
+                AppInlineMessage(
+                  key: const Key('quote-item-dialog-error'),
+                  message: _dialogError!,
+                ),
+                const SizedBox(height: AppSpacing.sm),
+              ],
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _cancelItem,
+                    child: const Text('Cancelar'),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  FilledButton(
+                    key: const Key('save-quote-item'),
+                    onPressed: _save,
+                    child: const Text('Aceptar'),
+                  ),
+                ],
               ),
             ],
           ),
         ),
       ],
     );
-    return compact
+    final dialog = compact
         ? Dialog.fullscreen(child: SafeArea(child: content))
         : Dialog(child: SizedBox(width: 820, height: 780, child: content));
+    return PopScope(
+      canPop: _allowPop || !_hasUnsavedChanges,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop && await _confirmDiscardItem() && context.mounted) {
+          _allowPop = true;
+          Navigator.pop(context);
+        }
+      },
+      child: dialog,
+    );
   }
 
   Widget _basicSection() => Column(
@@ -1211,6 +1508,7 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
       Text('Reglas de precio', style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: AppSpacing.md),
       TextField(
+        key: const Key('quote-item-multiplier'),
         controller: _multiplier,
         decoration: const InputDecoration(labelText: 'Multiplicador'),
         keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -1305,17 +1603,25 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
   Widget _calculationCard() {
     final draft = _draft;
     QuoteDraftItemCalculation? result;
-    try {
-      if (draft != null && draft.usages.isNotEmpty) {
+    String? errorMessage = _draftProblem;
+    if (errorMessage == null && draft != null) {
+      try {
         result = widget.controller.calculateDraftItem(draft, widget.priceType);
+      } catch (error) {
+        errorMessage = _friendlyItemError(error);
       }
-    } catch (_) {}
+    }
     return AppCard(
       color: AppColors.sageSoft,
       borderColor: AppColors.sageSoft,
       child: result == null
-          ? const Text(
-              'Completá nombre, cantidad, materiales y multiplicador para ver el precio.',
+          ? Text(
+              errorMessage ?? 'No se pudo calcular el precio.',
+              key: const Key('quote-item-calculation-error'),
+              style: const TextStyle(
+                color: AppColors.danger,
+                fontWeight: FontWeight.w700,
+              ),
             )
           : Wrap(
               spacing: AppSpacing.xl,
@@ -1354,7 +1660,12 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
       materialsController:
           widget.controller.productsController.materialsController,
     );
-    if (value != null && mounted) setState(() => _usages.add(value));
+    if (value != null && mounted) {
+      setState(() {
+        _usages.add(value);
+        _dialogError = null;
+      });
+    }
   }
 
   Future<void> _configureGeometry() async {
@@ -1373,9 +1684,7 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
         draft.dimensions == null ||
         draft.geometryProfile == null ||
         draft.usages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Completá forma, medidas y materiales.')),
-      );
+      setState(() => _dialogError = 'Completá forma, medidas y materiales.');
       return;
     }
     final now = DateTime.now().toUtc();
@@ -1471,12 +1780,8 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
     if (value != null && mounted) {
       setState(() => _usages[index] = value);
       if (value.materialId != previous.materialId) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Cambiaste el material principal. Revisá el consumo: la cantidad no se ajustó automáticamente.',
-            ),
-          ),
+        setState(
+          () => _dialogError = 'Cambiaste el material. Revisá el consumo: la cantidad no se ajustó automáticamente.',
         );
       }
     }
@@ -1508,6 +1813,7 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
           : ArgentineNumberFormatter.decimal(current.quantity.amount),
     );
     var unitId = current?.quantity.unitId;
+    String? errorMessage;
     final units =
         widget.controller.productsController.materialsController.units;
     unitId ??= units.firstOrNull?.id;
@@ -1556,6 +1862,13 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
                   ],
                   onChanged: (value) => setDialogState(() => unitId = value),
                 ),
+                if (errorMessage != null) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  AppInlineMessage(
+                    key: const Key('quote-measure-error'),
+                    message: errorMessage!,
+                  ),
+                ],
               ],
             ),
           ),
@@ -1573,6 +1886,17 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
                     parsed == null ||
                     parsed.scaledValue < 0 ||
                     unitId == null) {
+                  setDialogState(() {
+                    if (name.text.trim().isEmpty) {
+                      errorMessage = 'Escribí el nombre de la medida.';
+                    } else if (parsed == null) {
+                      errorMessage = 'Ingresá un valor válido.';
+                    } else if (parsed.scaledValue < 0) {
+                      errorMessage = 'El valor no puede ser negativo.';
+                    } else {
+                      errorMessage = 'Elegí una unidad.';
+                    }
+                  });
                   return;
                 }
                 Navigator.pop(
@@ -1593,36 +1917,42 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
 
   void _save() {
     final draft = _draft;
-    if (draft == null ||
-        draft.name.trim().isEmpty ||
-        draft.quantity <= 0 ||
-        draft.priceMultiplier.scaledValue <= 0 ||
-        draft.usages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Completá nombre, cantidad, materiales y multiplicador.',
-          ),
-        ),
+    final problem = _draftProblem;
+    if (problem != null || draft == null) {
+      setState(
+        () => _dialogError = problem ?? 'Revisá los datos del producto.',
       );
       return;
     }
     try {
       widget.controller.calculateDraftItem(draft, widget.priceType);
+      _allowPop = true;
       Navigator.pop(context, draft);
-    } on StateError catch (error) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
-    } catch (_) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Revisá los materiales, variantes y unidades elegidas.',
-          ),
-        ),
-      );
+    } catch (error) {
+      setState(() => _dialogError = _friendlyItemError(error));
     }
   }
+
+  String? get _draftProblem {
+    if (_name.text.trim().isEmpty) return 'Falta el nombre del producto.';
+    final quantity = int.tryParse(_quantity.text);
+    if (quantity == null) return 'Ingresá una cantidad válida.';
+    if (quantity <= 0) return 'La cantidad debe ser mayor que cero.';
+    final multiplier = ArgentineNumberParser.tryParseDecimal(_multiplier.text);
+    if (multiplier == null) return 'Ingresá un multiplicador válido.';
+    if (multiplier.scaledValue <= 0) {
+      return 'El multiplicador debe ser mayor que cero.';
+    }
+    if (_usages.isEmpty) return 'Agregá al menos una materia prima.';
+    return null;
+  }
+
+  String _friendlyItemError(Object error) => switch (error) {
+    StateError(:final message) when message.contains('porcentaje minorista') => 'No hay precio minorista: falta definir el porcentaje minorista. Activá “Minorista personalizado” y escribí el porcentaje, o usá precio mayorista.',
+    StateError(:final message) => message,
+    ArgumentError(:final message) => message.toString(),
+    _ => 'Revisá las materias primas, variantes y unidades elegidas.',
+  };
 
   String _dimensionsSignature(List<_MeasureDraft> values) => values
       .map(
@@ -1630,6 +1960,37 @@ final class _QuoteItemEditorState extends State<_QuoteItemEditor> {
             '${value.name}:${value.quantity.amount.scaledValue}:${value.quantity.unitId}',
       )
       .join('|');
+
+  Future<void> _cancelItem() async {
+    if (!_hasUnsavedChanges || await _confirmDiscardItem()) {
+      if (mounted) {
+        _allowPop = true;
+        Navigator.pop(context);
+      }
+    }
+  }
+
+  Future<bool> _confirmDiscardItem() async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Tenés cambios sin guardar'),
+          content: const Text(
+            'Si salís ahora, la personalización de este producto no se guardará.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Seguir editando'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Salir sin guardar'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
 }
 
 Future<QuoteAdjustmentFormValue?> showQuoteAdjustmentEditor({
@@ -1639,6 +2000,7 @@ Future<QuoteAdjustmentFormValue?> showQuoteAdjustmentEditor({
   final description = TextEditingController();
   final amount = TextEditingController();
   var positive = true;
+  String? errorMessage;
   return showDialog<QuoteAdjustmentFormValue>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -1685,6 +2047,13 @@ Future<QuoteAdjustmentFormValue?> showQuoteAdjustmentEditor({
                   decimal: true,
                 ),
               ),
+              if (errorMessage != null) ...[
+                const SizedBox(height: AppSpacing.md),
+                AppInlineMessage(
+                  key: const Key('quote-adjustment-error'),
+                  message: errorMessage!,
+                ),
+              ],
             ],
           ),
         ),
@@ -1700,7 +2069,14 @@ Future<QuoteAdjustmentFormValue?> showQuoteAdjustmentEditor({
                 amount.text,
                 currency: currency,
               );
-              if (description.text.trim().isEmpty || parsed == null) return;
+              if (description.text.trim().isEmpty || parsed == null) {
+                setState(() {
+                  errorMessage = description.text.trim().isEmpty
+                      ? 'Escribí una descripción para el ajuste.'
+                      : 'Ingresá un importe válido.';
+                });
+                return;
+              }
               Navigator.pop(
                 context,
                 QuoteAdjustmentFormValue(

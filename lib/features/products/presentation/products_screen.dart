@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,6 +5,7 @@ import '../../../core/design_system/app_colors.dart';
 import '../../../core/design_system/app_tokens.dart';
 import '../../../core/design_system/components/app_card.dart';
 import '../../../core/design_system/components/app_empty_state.dart';
+import '../../../core/design_system/components/app_file_image.dart';
 import '../../../core/design_system/components/status_pill.dart';
 import '../../../core/formatting/argentine_number_formatter.dart';
 import '../../../core/money/money.dart';
@@ -201,7 +200,10 @@ final class _ProductsScreenState extends State<ProductsScreen> {
       decoration: const InputDecoration(labelText: 'Estado'),
       items: [
         for (final value in ProductStatusFilter.values)
-          DropdownMenuItem(value: value, child: Text(value.label)),
+          DropdownMenuItem(
+            value: value,
+            child: Text(value.label, overflow: TextOverflow.ellipsis),
+          ),
       ],
       onChanged: (value) => setState(() => _status = value ?? _status),
     );
@@ -210,21 +212,31 @@ final class _ProductsScreenState extends State<ProductsScreen> {
       initialValue: _categoryId,
       decoration: const InputDecoration(labelText: 'Categoría'),
       items: [
-        const DropdownMenuItem(value: null, child: Text('Todas')),
+        const DropdownMenuItem(
+          value: null,
+          child: Text('Todas', overflow: TextOverflow.ellipsis),
+        ),
         for (final value in widget.controller.categories)
-          DropdownMenuItem(value: value.metadata.id, child: Text(value.name)),
+          DropdownMenuItem(
+            value: value.metadata.id,
+            child: Text(value.name, overflow: TextOverflow.ellipsis),
+          ),
       ],
       onChanged: (value) => setState(() => _categoryId = value),
     );
     final material = DropdownButtonFormField<String?>(
+      isExpanded: true,
       initialValue: _materialId,
       decoration: const InputDecoration(labelText: 'Materia prima'),
       items: [
-        const DropdownMenuItem(value: null, child: Text('Todas')),
+        const DropdownMenuItem(
+          value: null,
+          child: Text('Todas', overflow: TextOverflow.ellipsis),
+        ),
         for (final value in widget.controller.materialsController.materials)
           DropdownMenuItem(
             value: value.material.metadata.id,
-            child: Text(value.material.name),
+            child: Text(value.material.name, overflow: TextOverflow.ellipsis),
           ),
       ],
       onChanged: (value) => setState(() => _materialId = value),
@@ -404,15 +416,19 @@ final class _ProductCard extends StatelessWidget {
       child: SizedBox(
         width: 58,
         height: 58,
-        child: photoPath != null && File(photoPath).existsSync()
-            ? Image.file(File(photoPath), fit: BoxFit.cover)
-            : Container(
-                color: AppColors.terracottaSoft,
-                child: const Icon(
-                  Icons.inventory_2_outlined,
-                  color: AppColors.terracottaDark,
-                ),
-              ),
+        child: AppFileImage(
+          path: photoPath,
+          cacheWidth: 160,
+          cacheHeight: 160,
+          semanticLabel: 'Foto de ${product.name}',
+          fallback: const ColoredBox(
+            color: AppColors.terracottaSoft,
+            child: Icon(
+              Icons.inventory_2_outlined,
+              color: AppColors.terracottaDark,
+            ),
+          ),
+        ),
       ),
     );
     if (!desktop) {
@@ -629,13 +645,17 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (photo != null && File(photo).existsSync())
+              if (photo != null)
                 ClipRRect(
                   borderRadius: BorderRadius.circular(AppRadii.md),
-                  child: Image.file(
-                    File(photo),
+                  child: SizedBox(
                     height: 220,
-                    fit: BoxFit.cover,
+                    child: AppFileImage(
+                      path: photo,
+                      cacheWidth: 1200,
+                      cacheHeight: 440,
+                      semanticLabel: 'Foto de ${bundle.product.name}',
+                    ),
                   ),
                 ),
               const SizedBox(height: AppSpacing.md),
@@ -685,7 +705,7 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
               ],
               const SizedBox(height: AppSpacing.lg),
               Text(
-                'Materiales utilizados',
+                'Materias primas utilizadas',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: AppSpacing.xs),
@@ -732,7 +752,7 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
                     ),
                   const Divider(),
                   _amountRow(
-                    'Materiales principales',
+                    'Materias primas principales',
                     calculation.cost.primaryMaterials,
                   ),
                   _amountRow(
@@ -849,7 +869,11 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
       controller: widget.controller,
       bundle: bundle,
     );
-    if (saved && mounted) setState(() {});
+    if (saved && mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Producto actualizado.')));
+    }
   }
 
   Future<void> _duplicate(ProductBundle bundle) async {
@@ -861,8 +885,18 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
   }
 
   Future<void> _toggle(ProductBundle bundle) async {
-    await widget.controller.setProductActive(bundle, !bundle.product.isActive);
-    if (mounted) setState(() {});
+    final activate = !bundle.product.isActive;
+    await widget.controller.setProductActive(bundle, activate);
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            activate ? 'Producto activado.' : 'Producto desactivado.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _delete(ProductBundle bundle) async {
@@ -885,9 +919,15 @@ final class _ProductDetailDialogState extends State<_ProductDetailDialog> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
     await widget.controller.deleteProduct(bundle);
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      Navigator.pop(context);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Producto eliminado.')),
+      );
+    }
   }
 }
 

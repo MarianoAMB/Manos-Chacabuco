@@ -34,6 +34,17 @@ abstract final class ArgentineNumberFormatter {
     return '$prefix${moneyAmount(value)}';
   }
 
+  /// Formato comercial: conserva centavos reales pero evita mostrar `,00`.
+  static String commercialMoney(Money value) {
+    final prefix = value.currency == 'ARS' ? r'$' : '${value.currency} ';
+    final absolute = value.minorUnits.abs();
+    if (absolute % 100 == 0) {
+      final sign = value.minorUnits < 0 ? '-' : '';
+      return '$prefix$sign${_groupThousands((absolute ~/ 100).toString())}';
+    }
+    return money(value);
+  }
+
   static String moneyAmount(Money value) {
     final sign = value.minorUnits < 0 ? '-' : '';
     final absolute = value.minorUnits.abs();

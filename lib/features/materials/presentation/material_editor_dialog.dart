@@ -725,9 +725,9 @@ final class _MaterialEditorState extends State<MaterialEditor> {
       await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('¿Descartar los cambios?'),
+          title: const Text('Tenés cambios sin guardar'),
           content: const Text(
-            'Lo que completaste en este formulario no se guardará.',
+            'Si salís ahora, los cambios de esta materia prima no se guardarán.',
           ),
           actions: [
             TextButton(
@@ -736,7 +736,7 @@ final class _MaterialEditorState extends State<MaterialEditor> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Descartar'),
+              child: const Text('Salir sin guardar'),
             ),
           ],
         ),

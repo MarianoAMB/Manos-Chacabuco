@@ -36,7 +36,7 @@ El esquema inicial incluye configuración, categorías, materiales, variantes, p
 
 Las migraciones son incrementales: nunca se edita una versión ya publicada; se agrega el siguiente paso y se prueba el upgrade.
 
-La versión actual del esquema es **6**. La migración v2 agrega observaciones a variantes, índices para búsqueda y el catálogo inicial extensible de unidades y categorías de materiales. La migración v3 agrega el override de hilo, el rol de cada consumo, índices de consulta y las categorías iniciales editables de productos. La migración v4 amplía presupuestos con duración de validez, tipo de precio, total, configuración productiva por ítem, snapshots serializados y ajustes asociados a ítems o al total. La migración v5 agrega el perfil geométrico serializado a productos e ítems de presupuesto y el origen manual, estimado o confirmado de cada consumo. La migración v6 agrega elegibilidad explícita para calibración, procedencia idempotente de la importación histórica e informes estructurados. No inserta datos de ejemplo y conserva los datos de las versiones anteriores.
+La versión actual del esquema es **8**. La migración v2 agrega observaciones a variantes, índices para búsqueda y el catálogo inicial extensible de unidades y categorías de materias primas. La migración v3 agrega la excepción de hilo, el rol de cada consumo, índices de consulta y las categorías iniciales editables de productos. La migración v4 amplía presupuestos con duración de validez, tipo de precio, total, configuración productiva por ítem, snapshots serializados y ajustes asociados a ítems o al total. La migración v5 agrega el perfil geométrico serializado a productos e ítems de presupuesto y el origen manual, estimado o confirmado de cada consumo. La migración v6 agrega elegibilidad explícita para calibración, procedencia idempotente de la importación histórica e informes estructurados. La migración v7 agrega la referencia portable al logo y preferencias separadas para las listas minorista y mayorista. La migración v8 agrega estado de sincronización, revisiones, conflictos, cambios remotos procesados, cuenta vinculada, índices y triggers de outbox. No inserta datos de ejemplo y conserva los datos de las versiones anteriores.
 
 `SqliteMaterialRepository` guarda material y variantes en una única transacción. `SqliteProductRepository` guarda el producto y toda su composición también de forma atómica. `SqliteQuoteRepository` guarda cabecera, ítems, recetas, snapshots y ajustes dentro de una transacción. Las eliminaciones operativas son lógicas. Una categoría solo se elimina si no está relacionada y ningún material o variante utilizado por un producto puede eliminarse: debe desactivarse. Una actualización de versión nunca borra ni recrea automáticamente la base de la usuaria.
 
@@ -52,7 +52,21 @@ La confirmación crea primero un backup con timestamp y luego guarda materiales,
 
 Las medidas se extraen del nombre con reglas pequeñas por familia. Sólo maceteros y familias circulares explícitas reciben cilindro; un oval con tres medidas recibe perfil oval; círculos planos requieren una señal explícita; una bandeja conserva largo y ancho sin inventar forma. El resto guarda medidas genéricas y queda para revisión. Los consumos históricos conocidos se marcan como confirmados, pero sólo las relaciones principales con geometría compatible y distribución no ambigua tienen `calibration_eligible = 1`.
 
-Los límites conocidos son deliberados: no se inventan variantes de color, no se reparte un peso multimaterial, no se crea un material ficticio para costos hardcodeados, no se importan porcentajes históricos como configuración y no se mantienen referencias de Excel en el dominio. Modificar el Sheet no modifica la app. La futura sincronización con Google Drive permanece separada.
+Los límites conocidos son deliberados: no se inventan variantes de color, no se reparte un peso multimaterial, no se crea un material ficticio para costos fijos, no se importan porcentajes históricos como configuración y no se mantienen referencias de Excel en el dominio. Modificar la planilla no modifica la app. La sincronización con Google Drive permanece separada de la importación.
+
+## Listas de precios
+
+Los productos siguen siendo la única fuente de verdad. `PriceListsController` toma los productos y la configuración actuales, reutiliza el cálculo de `ProductsController` —y por lo tanto `CostEngine` y `PricingEngine`— y prepara entradas comerciales con el precio minorista o mayorista efectivo. Cada apertura y cada exportación vuelve a leer ese estado; una lista no congela precios ni modifica productos o presupuestos.
+
+`PriceListDataBuilder` filtra productos activos, seleccionados y con precio válido, aplica categorías, orden y opciones visuales, y produce un `PriceListDocument` neutral. Ese modelo client-facing contiene solamente nombre, categoría, foto local, medidas, material principal, precio y datos de encabezado/pie. No puede transportar costo, hilo, desperdicio, multiplicador, margen, notas internas ni desglose productivo. `ProductCommercialFormatter` resume medidas y materiales principales sin mostrar avíos complementarios.
+
+Los exportadores reciben el documento ya resuelto y nunca consultan SQLite ni calculan precios. `PdfPriceListExporter` crea páginas A4 reales con fuentes Unicode embebidas, cards indivisibles y paginado determinista. `PngPriceListExporter` crea páginas independientes de 1080 × 1350 px; decodifica y reduce las fotos según el tamaño de destino, aplica recorte `cover` y usa un placeholder si falta el archivo. El paginador limita la cantidad de productos por página según el modo con o sin fotos para evitar imágenes verticales enormes y cortes de contenido.
+
+`ShareService` mantiene la plataforma fuera del dominio. En Android, `NativeShareService` entrega el PDF o todas las páginas PNG al share sheet del sistema con MIME correcto; no integra una aplicación específica. En Windows, `PriceListFileService` usa selector de archivo para PDF, selector de carpeta para varias imágenes y permite abrir el archivo o su carpeta. Si no se solicita destino usa una carpeta visible `Manos Chacabuco` dentro de Descargas o Documentos.
+
+Las preferencias visuales de cada tipo se guardan en `price_list_preferences` como configuración, nunca con productos o precios copiados. El logo opcional se copia a `business_assets` dentro del directorio de soporte y SQLite conserva sólo el nombre relativo, igual que la estrategia de fotografías. El logo puede cambiarse o eliminarse; si no existe o su archivo se perdió, encabezados y exportadores usan el nombre del negocio sin fabricar una marca gráfica.
+
+Las limitaciones deliberadas de esta fase son: no hay historial de exportaciones, orden manual por arrastre, impresión nativa, sincronización con Drive ni catálogo web. Las apps receptoras disponibles dependen de lo instalado en Android; Windows prioriza guardar y abrir archivos.
 
 ## Presupuestos históricos
 
@@ -62,7 +76,7 @@ El ítem de presupuesto conserva dos capas. La configuración productiva contien
 
 Los ajustes de ítem pertenecen al precio final de una unidad: `precio final unitario = precio calculado + ajustes`. El subtotal multiplica ese resultado por la cantidad comercial. Los ajustes generales se suman una sola vez después de los subtotales. No existe recálculo automático por vencimiento, por cambios del producto base ni por cambios de materias primas.
 
-Las fotos se copian a `product_photos` dentro del directorio de soporte de la aplicación. SQLite guarda solamente un nombre de archivo relativo; el adaptador de almacenamiento resuelve la ruta de cada plataforma. Esto evita rutas absolutas frágiles y deja una frontera clara para sincronización futura.
+Las fotos se copian a `product_photos` dentro del directorio de soporte de la aplicación. SQLite guarda solamente un nombre de archivo relativo; el adaptador de almacenamiento resuelve la ruta de cada plataforma. Esto evita rutas absolutas frágiles y mantiene una frontera clara para la sincronización.
 
 ## Dinero y decimales
 
@@ -96,15 +110,41 @@ Las variantes se agregan únicamente para calibrar el consumo físico total de u
 
 `CostEngine` resuelve el costo unitario vigente de cada referencia, normaliza unidades, suma consumos reales y aplica hilo/desperdicio sólo al subtotal principal. `PricingEngine` recibe el costo total derivado, aplica el multiplicador y calcula el minorista únicamente cuando existe porcentaje efectivo. Los resultados estructurados no se persisten como fuente de verdad.
 
-## Preparación para sincronización
+## Sincronización privada offline-first
 
-Las entidades usan `SyncMetadata`. Las escrituras futuras deben guardar el cambio de negocio y su entrada de outbox en la misma transacción. `SyncGateway` representa el transporte remoto y `SyncRepository` la cola local; Google Drive será un adaptador, no una dependencia del dominio.
+SQLite sigue siendo la única fuente operativa. La migración v8 crea el estado de
+sincronización, conflictos, cambios remotos procesados y cuenta vinculada. Los
+triggers escriben cada cambio de negocio y su outbox dentro de la misma
+transacción, y las pantallas nunca esperan a Google Drive para guardar.
 
-La resolución de conflictos se definirá con los casos reales. Hasta entonces no se presupone que “última escritura gana” sea correcto para todos los datos.
+Cada cambio remoto es un sobre inmutable y versionado con ID de dispositivo,
+ID estable de entidad, operación, hash de contenido, revisión base, revisión
+nueva y referencias de assets. Los agregados de material, producto y presupuesto
+incluyen sus hijos para respetar dependencias. Fotos y logo son archivos
+separados, identificados por SHA-256 y descargados de forma atómica. Los exports
+PDF/PNG, builds, temporales y logs quedan fuera.
+
+`SyncEngine` primero incorpora cambios desconocidos y después publica el
+outbox. Cambios independientes se combinan; dos ramas sobre la misma revisión
+crean un conflicto explícito y el resto continúa. No se usa la hora como
+last-write-wins. Elegir la versión local crea una nueva revisión que resuelve
+ambas ramas; elegir la remota la aplica sin disparar otro cambio local. Las
+eliminaciones viajan como tombstones y no se purgan automáticamente.
+
+Google Drive es sólo el transporte. Usa `appDataFolder` con el scope mínimo
+`drive.appdata`; Android autentica con Google Sign-In y Windows usa OAuth de app
+nativa con navegador, loopback en `127.0.0.1`, state y PKCE S256. Los refresh
+tokens de Windows quedan cifrados con DPAPI para el usuario actual. La configuración externa se
+documenta en `docs/GOOGLE_DRIVE_SYNC_SETUP.md`.
+
+El inicio local no depende de OAuth ni de red. La sincronización se intenta al
+iniciar con una cuenta previa, al recuperar conectividad, al volver al frente,
+después de cambios con debounce y manualmente. No requiere un servicio
+permanente en segundo plano. El diseño evita un lock remoto global: los cambios
+son inmutables e idempotentes y SQLite serializa sus transacciones locales.
 
 ## Decisiones diferidas
 
-- Política de conflicto y formato remoto en Drive.
 - Flujo de borradores persistentes ante cierre forzado.
 - Política comercial final de redondeo y valores aún no definidos.
-- Formato remoto de fotos y exportaciones.
+- Retención/purga manual de historiales remotos y tombstones.

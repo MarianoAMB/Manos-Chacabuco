@@ -43,6 +43,8 @@ migrate_working_dir/
 **/service_account*.json
 **/google-services.json
 **/GoogleService-Info.plist
+/config/oauth.local.json
+/config/oauth.build.json
 
 # IntelliJ related
 *.iml
@@ -72,7 +74,11 @@ migrate_working_dir/
 
 # Project-local generated output and scratch space
 /outputs/
+/output/
+/tmp/
+/dist/
 /work/
+/firepit-log.txt
 
 # Symbolication related
 app.*.symbols

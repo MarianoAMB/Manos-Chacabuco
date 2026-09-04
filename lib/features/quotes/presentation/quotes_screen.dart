@@ -9,6 +9,9 @@ import '../../../core/design_system/components/app_empty_state.dart';
 import '../../../core/design_system/components/status_pill.dart';
 import '../../../core/formatting/argentine_number_formatter.dart';
 import '../../../core/money/money.dart';
+import '../../../data/exporting/pdf_quote_exporter.dart';
+import '../../../data/printing/native_print_service.dart';
+import '../../../data/sharing/native_share_service.dart';
 import '../../../domain/products/product_models.dart';
 import '../../../domain/quotes/quote_models.dart';
 import '../../products/application/products_controller.dart';
@@ -401,7 +404,7 @@ final class _QuoteCard extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(width: 110, child: status),
+          SizedBox(width: 140, child: status),
           const SizedBox(width: 36, child: Icon(Icons.more_horiz_rounded)),
         ],
       ),
@@ -423,7 +426,7 @@ final class _DesktopQuoteHeader extends StatelessWidget {
         Expanded(flex: 2, child: Text('Tipo')),
         Expanded(child: Text('Ítems')),
         Expanded(flex: 2, child: Text('Total')),
-        SizedBox(width: 110, child: Text('Estado')),
+        SizedBox(width: 140, child: Text('Estado')),
         SizedBox(width: 36, child: Text('Acc.')),
       ],
     ),
@@ -444,6 +447,12 @@ final class _QuoteDetailDialog extends StatefulWidget {
 }
 
 final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
+  static const _pdfExporter = PdfQuoteExporter();
+  static const _shareService = NativeShareService();
+  static const _printService = NativePrintService();
+
+  bool _preparingDocument = false;
+
   QuoteAggregate? get _aggregate => widget.controller.quotes
       .where(
         (item) =>
@@ -685,7 +694,7 @@ final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
             title: const Text('Ver cálculo'),
             children: [
               _amountRow(
-                'Materiales principales',
+                'Materias primas principales',
                 item.snapshot.primaryMaterials,
               ),
               _amountRow(
@@ -744,6 +753,18 @@ final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
 
   Widget _actions(QuoteAggregate aggregate, bool compact) {
     final buttons = [
+      OutlinedButton.icon(
+        key: const Key('share-quote'),
+        onPressed: _preparingDocument ? null : () => _shareQuote(aggregate),
+        icon: const Icon(Icons.share_rounded),
+        label: const Text('Compartir'),
+      ),
+      OutlinedButton.icon(
+        key: const Key('print-quote'),
+        onPressed: _preparingDocument ? null : () => _printQuote(aggregate),
+        icon: const Icon(Icons.print_rounded),
+        label: const Text('Imprimir'),
+      ),
       TextButton.icon(
         onPressed: () => _delete(aggregate),
         icon: const Icon(Icons.delete_outline_rounded),
@@ -781,8 +802,49 @@ final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
                 ],
               ),
             )
-          : Row(mainAxisAlignment: MainAxisAlignment.end, children: buttons),
+          : Wrap(
+              alignment: WrapAlignment.end,
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: buttons,
+            ),
     );
+  }
+
+  Future<void> _shareQuote(QuoteAggregate aggregate) async {
+    setState(() => _preparingDocument = true);
+    try {
+      final file = await _pdfExporter.export(aggregate);
+      final quote = aggregate.quote;
+      await _shareService.share(
+        [file],
+        text:
+            'Presupuesto de Manos Chacabuco para ${quote.customerName}. '
+            'Válido hasta el ${DateFormat('dd/MM/yyyy', 'es_AR').format(quote.validUntil)}.',
+      );
+    } catch (error) {
+      if (mounted) {
+        _message(
+          'No pudimos abrir las aplicaciones para compartir el presupuesto.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _preparingDocument = false);
+    }
+  }
+
+  Future<void> _printQuote(QuoteAggregate aggregate) async {
+    setState(() => _preparingDocument = true);
+    try {
+      final file = await _pdfExporter.export(aggregate);
+      await _printService.printPdf(file);
+    } catch (error) {
+      if (mounted) {
+        _message('No pudimos abrir las opciones de impresión.');
+      }
+    } finally {
+      if (mounted) setState(() => _preparingDocument = false);
+    }
   }
 
   Future<void> _edit(QuoteAggregate aggregate) async {
@@ -820,7 +882,7 @@ final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
       builder: (context) => AlertDialog(
         title: const Text('¿Recalcular con precios actuales?'),
         content: const Text(
-          'Se consultarán los precios actuales de los materiales. Todavía no se modificará el presupuesto: primero vas a ver una comparación.',
+          'Se consultarán los precios actuales de las materias primas. Todavía no se modificará el presupuesto: primero vas a ver una comparación.',
         ),
         actions: [
           TextButton(
@@ -973,9 +1035,15 @@ final class _QuoteDetailDialogState extends State<_QuoteDetailDialog> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
     await widget.controller.deleteQuote(aggregate);
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      Navigator.pop(context);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Presupuesto eliminado.')),
+      );
+    }
   }
 
   void _message(String value) =>

@@ -27,7 +27,7 @@ abstract final class AppTheme {
       useMaterial3: true,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: AppColors.canvas,
-      fontFamily: 'Segoe UI',
+      fontFamily: 'Roboto',
       visualDensity: VisualDensity.standard,
     );
 
@@ -132,9 +132,13 @@ abstract final class AppTheme {
         selectedLabelTextStyle: TextStyle(
           color: AppColors.terracottaDark,
           fontWeight: FontWeight.w700,
+          fontFamily: 'Roboto',
         ),
         unselectedIconTheme: IconThemeData(color: AppColors.mutedInk),
-        unselectedLabelTextStyle: TextStyle(color: AppColors.mutedInk),
+        unselectedLabelTextStyle: TextStyle(
+          color: AppColors.mutedInk,
+          fontFamily: 'Roboto',
+        ),
       ),
       dividerTheme: const DividerThemeData(
         color: AppColors.outline,
@@ -150,6 +154,17 @@ abstract final class AppTheme {
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: AppColors.surface,
         showDragHandle: true,
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.ink,
+        contentTextStyle: const TextStyle(
+          color: Colors.white,
+          fontFamily: 'Roboto',
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.sm),
+        ),
       ),
     );
   }

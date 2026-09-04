@@ -184,13 +184,20 @@ final class _Header extends StatelessWidget {
     final greeting = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Hola 👋', style: Theme.of(context).textTheme.bodyLarge),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.waving_hand_outlined, size: 20),
+            const SizedBox(width: AppSpacing.xs),
+            Text('Hola', style: Theme.of(context).textTheme.bodyLarge),
+          ],
+        ),
         const SizedBox(height: AppSpacing.xxs),
         Text(businessName, style: Theme.of(context).textTheme.headlineMedium),
       ],
     );
     const status = StatusPill(
-      label: 'Todo funciona sin conexión',
+      label: 'Podés trabajar sin conexión',
       icon: Icons.cloud_off_rounded,
     );
     return LayoutBuilder(
@@ -244,7 +251,7 @@ final class _WelcomeCard extends StatelessWidget {
             children: [
               Text(
                 activeMaterials == 0
-                    ? 'Empecemos por tus materiales'
+                    ? 'Empecemos por tus materias primas'
                     : 'Tus costos empiezan acá',
                 style: Theme.of(context).textTheme.displaySmall
                     ?.copyWith(color: Colors.white, fontSize: 36),
@@ -314,7 +321,7 @@ final class _ProductsSummary extends StatelessWidget {
               ),
               const SizedBox(height: AppSpacing.xxs),
               const Text(
-                'Costos recalculados con los precios actuales de tus materiales.',
+                'Costos recalculados con los precios actuales de tus materias primas.',
               ),
             ],
           ),
@@ -433,7 +440,7 @@ final class _MaterialsSummary extends StatelessWidget {
               const SizedBox(height: AppSpacing.xxs),
               Text(
                 controller.materials.isEmpty
-                    ? 'Todavía no cargaste materiales.'
+                    ? 'Todavía no cargaste materias primas.'
                     : 'Precios y presentaciones guardados localmente.',
               ),
             ],

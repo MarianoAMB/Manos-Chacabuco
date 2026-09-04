@@ -23,7 +23,7 @@ La usuaria principal es la emprendedora y no necesita conocer conceptos técnico
 - Las dos plataformas permiten crear, consultar, modificar y eliminar todos los datos.
 - La navegación es inferior en móvil y lateral en escritorio.
 - El funcionamiento normal es offline-first: la base local es la fuente operativa de cada dispositivo.
-- La sincronización futura con Google Drive será un proceso separado del dominio y nunca bloqueará el trabajo local.
+- La sincronización opcional con Google Drive es un proceso separado del dominio y nunca bloquea el trabajo local.
 
 ## Alcance funcional del producto
 
@@ -101,13 +101,15 @@ La calibración normaliza consumos y medidas a unidades base, agrega las variant
 
 ### Listas de precios e importación
 
-Habrá exportaciones separadas mayorista y minorista en PDF e imagen, con foto opcional, nombre, medidas, material y precio. Android podrá compartir mediante el sistema nativo.
+Las listas minorista y mayorista se construyen con productos activos y precios vigentes. Permiten seleccionar categorías y productos, buscar, ordenar, agrupar, alternar fotos, medidas y material principal, mostrar fecha, mínimo mayorista y una nota opcional, y ver una previsualización antes de exportar. Generan PDF A4 multipágina o páginas PNG de 1080 × 1350; Android comparte los archivos mediante el sistema nativo y Windows permite elegir destino y abrir el resultado o su carpeta.
+
+Son piezas comerciales, no presupuestos: no tienen cliente, cantidades, validez ni snapshot en la base. Nunca muestran costos internos, materias primas valorizadas, hilo, desperdicio, multiplicadores, márgenes o detalles de fabricación. Las preferencias guardan sólo opciones visuales y selección; el precio se vuelve a calcular desde el producto al preparar la próxima exportación.
 
 La hoja "Precio Manos Chacabuco" será una fuente de datos inicial. Sus coordenadas y fórmulas no forman parte del modelo de la aplicación.
 
-## Datos, identidad y sincronización futura
+## Datos, identidad y sincronización
 
-Las entidades sincronizables usan UUID estable, `createdAt`, `updatedAt` y `deletedAt` para borrado lógico. La base mantiene una bandeja de cambios locales. El diseño futuro es:
+Las entidades sincronizables usan UUID estable, `createdAt`, `updatedAt` y `deletedAt` para borrado lógico. La base mantiene una bandeja de cambios locales. El diseño implementado es:
 
 `base local ↔ motor de sincronización ↔ Google Drive ↔ motor de sincronización ↔ base local`
 
@@ -164,6 +166,45 @@ Incluye lectura local del XLSX real con valores y fórmulas; detección semánti
 La importación es de una sola vía y la app pasa a ser la fuente de verdad. Reimportar sólo detecta datos nuevos o conflictos y nunca sobrescribe silenciosamente una edición local. Los porcentajes de desperdicio y minorista observados en la planilla permanecen como contexto histórico: los defaults confirmados siguen siendo 1,5 % de desperdicio y 6 % de hilo.
 
 Continúan fuera de alcance exportaciones PDF/imagen, compartir, sincronización con Google Drive, stock, CRM, pedidos, ventas y analítica avanzada.
+
+### Fase 7 — listas de precios comerciales
+
+Incluye listas independientes minorista y mayorista basadas en productos activos y precios efectivos actuales; selección por categoría y producto; búsqueda; cuatro órdenes deterministas; presentación con o sin fotos; medidas y material principal opcionales; agrupación; mínimo mayorista; fecha y nota al pie; preview adaptativo; PDF A4 multipágina; PNG paginado de 1080 × 1350; nombres de archivo legibles; share sheet nativo de Android; guardado, apertura de archivo y apertura de carpeta en Windows; logo opcional portable; y preferencias visuales por tipo de lista.
+
+La salida usa un modelo comercial limitado que no transporta costos, hilo, desperdicio, multiplicador, margen, notas internas ni desglose de fabricación. Exportar no modifica productos, no crea snapshots y no toca presupuestos históricos. Continúan fuera de alcance Google Drive Sync, historial de exportaciones, orden manual por arrastre, impresión nativa, stock, CRM, ventas, pedidos, ecommerce, catálogo web público y analítica avanzada.
+
+### Fase 8 — export editorial y sincronización privada
+
+Exportar comienza eligiendo **Con fotos** o **Sin fotos** y después PDF,
+imágenes o compartir cuando la plataforma lo permite. Con fotos conserva el
+catálogo visual. Sin fotos usa un diseño propio de dos columnas de productos por
+página, sin tarjetas fotográficas ni placeholders; mantiene encabezado,
+categorías, precio, medidas, material y pie con cortes deterministas. El preview
+muestra exactamente el modo elegido y las preferencias se recuerdan por tipo de
+lista. Ambos modos continúan usando exclusivamente datos comerciales.
+
+La sincronización opcional replica con Google Drive la base operativa entre
+Windows y Android sin reemplazar SQLite. Guarda primero en local, mantiene una
+cola transaccional y sincroniza incrementalmente configuraciones, catálogos,
+materiales, productos, recetas, geometría, presupuestos, snapshots, preferencias
+de lista y metadatos de importación. Fotos y logo viajan como assets deduplicados
+por hash. Los PDFs/PNGs exportados nunca se suben automáticamente.
+
+La misma cuenta de Google accede al espacio privado de la app. Los cambios en
+entidades distintas se combinan; una edición concurrente de la misma entidad
+queda visible para elegir versión local o remota, sin sobrescritura silenciosa.
+El borrado usa tombstones, los snapshots de presupuesto se trasladan sin
+recalcular y desconectar Google no borra datos locales. La app conserva toda su
+funcionalidad sin cuenta o sin Internet.
+
+### Fase 9 — cierre de V1
+
+La versión 1.0.0 consolida los módulos existentes sin ampliar el alcance. Agrega
+protección consistente ante cambios sin guardar, feedback de acciones,
+recuperación visual para imágenes faltantes o dañadas, arranque con estado de
+carga, nombre correcto en ambas plataformas, sección Acerca de, revisión
+responsive y documentación de uso y entrega. La base continúa en SQLite v8 y
+las migraciones existentes se conservan sin recrear datos.
 
 ## Criterios de aceptación transversales
 
