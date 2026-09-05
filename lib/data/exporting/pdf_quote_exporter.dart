@@ -23,6 +23,15 @@ final class PdfQuoteExporter {
     final boldFont = pw.Font.ttf(
       await rootBundle.load('assets/fonts/Roboto-Bold.ttf'),
     );
+    final logoData = await rootBundle.load(
+      'assets/images/manos_chacabuco_logo_mono.png',
+    );
+    final logo = pw.MemoryImage(
+      logoData.buffer.asUint8List(
+        logoData.offsetInBytes,
+        logoData.lengthInBytes,
+      ),
+    );
 
     pdf.addPage(
       pw.MultiPage(
@@ -43,7 +52,7 @@ final class PdfQuoteExporter {
               ),
         footer: (context) => _footer(context),
         build: (_) => [
-          _documentHeader(aggregate),
+          _documentHeader(aggregate, logo),
           pw.SizedBox(height: 22),
           _itemsTable(aggregate),
           pw.SizedBox(height: 18),
@@ -73,25 +82,43 @@ final class PdfQuoteExporter {
     );
   }
 
-  pw.Widget _documentHeader(QuoteAggregate aggregate) {
+  pw.Widget _documentHeader(QuoteAggregate aggregate, pw.ImageProvider logo) {
     final quote = aggregate.quote;
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.stretch,
       children: [
-        pw.Text(
-          'MANOS CHACABUCO',
-          style: pw.TextStyle(
-            fontSize: 18,
-            fontWeight: pw.FontWeight.bold,
-            letterSpacing: 1.2,
-          ),
+        pw.Row(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.SizedBox(
+              width: 235,
+              height: 92,
+              child: pw.Image(logo, fit: pw.BoxFit.contain),
+            ),
+            pw.Spacer(),
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                _contactLine('Teléfono: 2352 443476'),
+                _contactLine('Teléfono: 2364 697104'),
+                _contactLine('Instagram: @manoschacabuco'),
+                _contactLine('Facebook: manoschacabuco'),
+              ],
+            ),
+          ],
         ),
-        pw.SizedBox(height: 4),
+        pw.SizedBox(height: 10),
+        pw.Divider(color: PdfColors.black, thickness: 1),
+        pw.SizedBox(height: 10),
         pw.Text(
           'PRESUPUESTO',
-          style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold),
+          style: pw.TextStyle(
+            fontSize: 15,
+            fontWeight: pw.FontWeight.bold,
+            letterSpacing: 0.8,
+          ),
         ),
-        pw.SizedBox(height: 18),
+        pw.SizedBox(height: 13),
         pw.Text(
           'Cliente: ${quote.customerName}',
           style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
@@ -107,11 +134,15 @@ final class PdfQuoteExporter {
           'Fecha: ${_date(quote.date)}  |  Precio ${quote.priceType == QuotePriceType.retail ? 'minorista' : 'mayorista'}',
           style: const pw.TextStyle(fontSize: 9),
         ),
-        pw.SizedBox(height: 12),
-        pw.Divider(color: PdfColors.black, thickness: 1),
+        pw.SizedBox(height: 8),
       ],
     );
   }
+
+  pw.Widget _contactLine(String value) => pw.Padding(
+    padding: const pw.EdgeInsets.only(bottom: 4),
+    child: pw.Text(value, style: const pw.TextStyle(fontSize: 9)),
+  );
 
   pw.Widget _itemsTable(QuoteAggregate aggregate) {
     final rows = <pw.TableRow>[
@@ -246,21 +277,12 @@ final class PdfQuoteExporter {
     decoration: const pw.BoxDecoration(
       border: pw.Border(top: pw.BorderSide(color: PdfColors.black, width: 0.6)),
     ),
-    child: pw.Row(
-      crossAxisAlignment: pw.CrossAxisAlignment.end,
-      children: [
-        pw.Expanded(
-          child: pw.Text(
-            'Tel. 2352 443476 / 2364 697104\n'
-            'Instagram: @manoschacabuco  |  Facebook: manoschacabuco',
-            style: const pw.TextStyle(fontSize: 8),
-          ),
-        ),
-        pw.Text(
-          '${context.pageNumber} de ${context.pagesCount}',
-          style: const pw.TextStyle(fontSize: 8),
-        ),
-      ],
+    child: pw.Align(
+      alignment: pw.Alignment.centerRight,
+      child: pw.Text(
+        '${context.pageNumber} de ${context.pagesCount}',
+        style: const pw.TextStyle(fontSize: 8),
+      ),
     ),
   );
 

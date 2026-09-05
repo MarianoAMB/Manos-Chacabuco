@@ -89,6 +89,8 @@ flutter:
     - assets/fonts/Roboto-Regular.ttf
     - assets/fonts/Roboto-Bold.ttf
     - assets/fonts/LICENSE-Roboto.txt
+    - assets/images/manos_chacabuco_logo_mono.png
+    - assets/images/manos_chacabuco_app_icon.png
   fonts:
     - family: Roboto
       fonts:
