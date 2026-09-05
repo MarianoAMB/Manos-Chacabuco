@@ -12,19 +12,26 @@ final class GoogleSyncConfiguration {
     this.desktopClientId = const String.fromEnvironment(
       'MANOS_GOOGLE_DESKTOP_CLIENT_ID',
     ),
+    this.desktopClientSecret = const String.fromEnvironment(
+      'MANOS_GOOGLE_DESKTOP_CLIENT_SECRET',
+    ),
   });
 
   final String androidServerClientId;
   final String desktopClientId;
+  final String desktopClientSecret;
 
-  GoogleSyncConfiguration overlay(GoogleSyncConfiguration saved) =>
+  GoogleSyncConfiguration overlay(GoogleSyncConfiguration preferred) =>
       GoogleSyncConfiguration(
-        androidServerClientId: saved.androidServerClientId.trim().isEmpty
+        androidServerClientId: preferred.androidServerClientId.trim().isEmpty
             ? androidServerClientId
-            : saved.androidServerClientId.trim(),
-        desktopClientId: saved.desktopClientId.trim().isEmpty
+            : preferred.androidServerClientId.trim(),
+        desktopClientId: preferred.desktopClientId.trim().isEmpty
             ? desktopClientId
-            : saved.desktopClientId.trim(),
+            : preferred.desktopClientId.trim(),
+        desktopClientSecret: preferred.desktopClientSecret.trim().isEmpty
+            ? desktopClientSecret
+            : preferred.desktopClientSecret.trim(),
       );
 
   GoogleSyncConfiguration withSetupInput(
@@ -55,13 +62,24 @@ final class GoogleSyncConfiguration {
         root?['desktopClientId'],
         if (root == null) trimmed,
       ]);
+      final clientSecret = _firstString([
+        installed?['client_secret'],
+        root?['MANOS_GOOGLE_DESKTOP_CLIENT_SECRET'],
+        root?['desktopClientSecret'],
+      ]);
       _validateClientId(
         clientId,
         invalidMessage: 'Elegí el JSON de una credencial Google de tipo "Aplicación de escritorio".',
       );
+      if (clientSecret == null) {
+        throw const FormatException(
+          'Elegí el JSON completo de la credencial Google de escritorio.',
+        );
+      }
       return GoogleSyncConfiguration(
         androidServerClientId: androidServerClientId,
         desktopClientId: clientId!,
+        desktopClientSecret: clientSecret,
       );
     }
 
@@ -81,6 +99,7 @@ final class GoogleSyncConfiguration {
       return GoogleSyncConfiguration(
         androidServerClientId: clientId!,
         desktopClientId: desktopClientId,
+        desktopClientSecret: desktopClientSecret,
       );
     }
 
@@ -92,12 +111,14 @@ final class GoogleSyncConfiguration {
   Map<String, Object?> toJson() => {
     'androidServerClientId': androidServerClientId,
     'desktopClientId': desktopClientId,
+    'desktopClientSecret': desktopClientSecret,
   };
 
   factory GoogleSyncConfiguration.fromJson(Map<String, Object?> json) =>
       GoogleSyncConfiguration(
         androidServerClientId: json['androidServerClientId'] as String? ?? '',
         desktopClientId: json['desktopClientId'] as String? ?? '',
+        desktopClientSecret: json['desktopClientSecret'] as String? ?? '',
       );
 
   static Map<String, Object?>? _map(Object? value) =>

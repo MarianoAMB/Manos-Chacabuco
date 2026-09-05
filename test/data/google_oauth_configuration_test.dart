@@ -18,7 +18,7 @@ void main() {
       ''', platform: 'windows');
 
     expect(configuration.desktopClientId, desktopClientId);
-    expect(configuration.toJson().containsKey('desktopClientSecret'), isFalse);
+    expect(configuration.desktopClientSecret, 'desktop-secret');
   });
 
   test('Android acepta el JSON web o el Client ID pegado', () {
@@ -61,6 +61,7 @@ void main() {
     const expected = GoogleSyncConfiguration(
       androidServerClientId: webClientId,
       desktopClientId: desktopClientId,
+      desktopClientSecret: 'desktop-secret',
     );
 
     await store.write(expected);
@@ -68,6 +69,25 @@ void main() {
 
     expect(restored?.androidServerClientId, webClientId);
     expect(restored?.desktopClientId, desktopClientId);
-    expect(restored?.toJson().containsKey('desktopClientSecret'), isFalse);
+    expect(restored?.desktopClientSecret, 'desktop-secret');
+  });
+
+  test('la credencial incluida reemplaza una configuración manual antigua', () {
+    const saved = GoogleSyncConfiguration(
+      androidServerClientId: 'old-web.apps.googleusercontent.com',
+      desktopClientId: 'old-desktop.apps.googleusercontent.com',
+      desktopClientSecret: 'old-secret',
+    );
+    const bundled = GoogleSyncConfiguration(
+      androidServerClientId: webClientId,
+      desktopClientId: desktopClientId,
+      desktopClientSecret: 'bundled-secret',
+    );
+
+    final merged = saved.overlay(bundled);
+
+    expect(merged.androidServerClientId, webClientId);
+    expect(merged.desktopClientId, desktopClientId);
+    expect(merged.desktopClientSecret, 'bundled-secret');
   });
 }

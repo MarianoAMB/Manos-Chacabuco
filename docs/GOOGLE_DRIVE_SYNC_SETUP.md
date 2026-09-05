@@ -37,8 +37,10 @@ No hace falta agregar `google-services.json` para esta implementación.
 
 1. Crear un cliente OAuth de tipo **Aplicación de escritorio**.
 2. Copiar su Client ID como `MANOS_GOOGLE_DESKTOP_CLIENT_ID`.
-3. No copiar el `client_secret`: la app usa el flujo público de aplicaciones
-   instaladas, protegido con PKCE.
+3. Copiar también el valor generado como
+   `MANOS_GOOGLE_DESKTOP_CLIENT_SECRET`. En una aplicación instalada este dato
+   forma parte del ejecutable y no se considera un secreto confidencial; PKCE
+   protege cada autorización individual.
 
 Windows abre el navegador predeterminado y recibe la autorización en
 `127.0.0.1` mediante un puerto local temporal. Usa PKCE y no pide copiar códigos
@@ -59,7 +61,8 @@ En **Configuración > Sincronización**, pulsar **Conectar con Google**.
 
 1. Copiar `config/oauth.local.example.json` con el nombre
    `config/oauth.local.json`.
-2. Reemplazar los textos `REEMPLAZAR` por los Client IDs obtenidos.
+2. Reemplazar los textos `REEMPLAZAR` por los Client IDs y el secreto de
+   escritorio obtenidos.
 3. Compilar pasando:
 
    `--dart-define-from-file=config/oauth.local.json`

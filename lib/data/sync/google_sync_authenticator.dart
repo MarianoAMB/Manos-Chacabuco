@@ -7,6 +7,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -30,9 +31,10 @@ final class GoogleSyncAuthenticator implements ConfigurableSyncAuthenticator {
   static Future<GoogleSyncAuthenticator> openDefault() async {
     final store = GoogleOAuthConfigurationStore();
     final saved = await store.read();
-    final configuration = const GoogleSyncConfiguration().overlay(
-      saved ?? const GoogleSyncConfiguration(),
-    );
+    const bundled = GoogleSyncConfiguration();
+    // Las credenciales incluidas en una actualización deben reemplazar una
+    // configuración manual antigua, sin borrar ningún dato local del usuario.
+    final configuration = saved?.overlay(bundled) ?? bundled;
     return GoogleSyncAuthenticator(
       configuration: configuration,
       configurationStore: store,
@@ -48,7 +50,9 @@ final class GoogleSyncAuthenticator implements ConfigurableSyncAuthenticator {
   @override
   bool get isConfigured => switch (Platform.operatingSystem) {
     'android' => _configuration.androidServerClientId.trim().isNotEmpty,
-    'windows' => _configuration.desktopClientId.trim().isNotEmpty,
+    'windows' =>
+      _configuration.desktopClientId.trim().isNotEmpty &&
+          _configuration.desktopClientSecret.trim().isNotEmpty,
     _ => false,
   };
 
@@ -210,51 +214,100 @@ final class GoogleSyncAuthenticator implements ConfigurableSyncAuthenticator {
       final request = await server.first.timeout(const Duration(minutes: 3));
       final query = request.uri.queryParameters;
       final valid = query['state'] == state && query['code'] != null;
+      if (!valid) {
+        await _writeDesktopCallbackPage(request, success: false);
+        throw StateError('Google no autorizó la conexión.');
+      }
+      try {
+        final response = await http.post(
+          Uri.https('oauth2.googleapis.com', '/token'),
+          headers: const {'content-type': 'application/x-www-form-urlencoded'},
+          body: {
+            'client_id': _configuration.desktopClientId,
+            'client_secret': _configuration.desktopClientSecret.trim(),
+            'code': query['code']!,
+            'code_verifier': verifier,
+            'grant_type': 'authorization_code',
+            'redirect_uri': redirectUri,
+          },
+        );
+        if (response.statusCode != HttpStatus.ok) {
+          final details = _oauthErrorDetails(response);
+          debugPrint(
+            'Falló el intercambio OAuth de Google '
+            '(${response.statusCode}): $details',
+          );
+          throw StateError('OAuth de Google falló: $details');
+        }
+        final json = Map<String, Object?>.from(
+          jsonDecode(response.body) as Map,
+        );
+        final grantedScopes = (json['scope'] as String? ?? '')
+            .split(' ')
+            .where((scope) => scope.isNotEmpty)
+            .toSet();
+        if (!grantedScopes.contains(GoogleDriveRemoteSyncStore.appDataScope)) {
+          throw StateError(
+            'Google no autorizó el acceso privado de sincronización.',
+          );
+        }
+        final email = _emailFromIdToken(json['id_token']! as String);
+        final tokens = _DesktopTokens(
+          accessToken: json['access_token']! as String,
+          refreshToken: json['refresh_token'] as String?,
+          expiresAt: DateTime.now().toUtc().add(
+            Duration(seconds: json['expires_in']! as int),
+          ),
+          email: email,
+        );
+        await _desktopTokenStore.write(jsonEncode(tokens.toJson()));
+        await _writeDesktopCallbackPage(request, success: true);
+        return _DesktopSession(
+          email,
+          _DesktopTokenManager(
+            tokens: tokens,
+            configuration: _configuration,
+            tokenStore: _desktopTokenStore,
+          ),
+        );
+      } on Object {
+        await _writeDesktopCallbackPage(request, success: false);
+        rethrow;
+      }
+    } finally {
+      await server.close(force: true);
+    }
+  }
+
+  Future<void> _writeDesktopCallbackPage(
+    HttpRequest request, {
+    required bool success,
+  }) async {
+    try {
       request.response
-        ..statusCode = valid ? HttpStatus.ok : HttpStatus.badRequest
+        ..statusCode = success ? HttpStatus.ok : HttpStatus.badRequest
         ..headers.contentType = ContentType.html
         ..write(
-          valid
+          success
               ? '<html><body><h2>Cuenta conectada</h2><p>Ya podés cerrar esta ventana y volver a Manos Chacabuco.</p></body></html>'
               : '<html><body><h2>No se pudo conectar</h2><p>Volvé a Manos Chacabuco e intentá nuevamente.</p></body></html>',
         );
       await request.response.close();
-      if (!valid) throw StateError('Google no autorizó la conexión.');
-      final response = await http.post(
-        Uri.https('oauth2.googleapis.com', '/token'),
-        headers: const {'content-type': 'application/x-www-form-urlencoded'},
-        body: {
-          'client_id': _configuration.desktopClientId,
-          'code': query['code']!,
-          'code_verifier': verifier,
-          'grant_type': 'authorization_code',
-          'redirect_uri': redirectUri,
-        },
-      );
-      if (response.statusCode != HttpStatus.ok) {
-        throw StateError('Google rechazó la autorización.');
-      }
+    } on Object {
+      // Cerrar la pestaña antes de tiempo no debe invalidar la conexión.
+    }
+  }
+
+  String _oauthErrorDetails(http.Response response) {
+    try {
       final json = Map<String, Object?>.from(jsonDecode(response.body) as Map);
-      final email = _emailFromIdToken(json['id_token']! as String);
-      final tokens = _DesktopTokens(
-        accessToken: json['access_token']! as String,
-        refreshToken: json['refresh_token'] as String?,
-        expiresAt: DateTime.now().toUtc().add(
-          Duration(seconds: json['expires_in']! as int),
-        ),
-        email: email,
-      );
-      await _desktopTokenStore.write(jsonEncode(tokens.toJson()));
-      return _DesktopSession(
-        email,
-        _DesktopTokenManager(
-          tokens: tokens,
-          configuration: _configuration,
-          tokenStore: _desktopTokenStore,
-        ),
-      );
-    } finally {
-      await server.close(force: true);
+      final code = json['error'] as String? ?? 'respuesta inválida';
+      final description = json['error_description'] as String?;
+      return description == null || description.isEmpty
+          ? code
+          : '$code — $description';
+    } on Object {
+      return 'HTTP ${response.statusCode}';
     }
   }
 
@@ -382,6 +435,7 @@ final class _DesktopTokenManager {
       headers: const {'content-type': 'application/x-www-form-urlencoded'},
       body: {
         'client_id': _configuration.desktopClientId,
+        'client_secret': _configuration.desktopClientSecret.trim(),
         'refresh_token': refreshToken,
         'grant_type': 'refresh_token',
       },
