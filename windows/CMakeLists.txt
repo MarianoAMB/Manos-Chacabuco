@@ -87,6 +87,36 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+# Ship the Microsoft Visual C++ runtime next to the executable. This app-local
+# deployment keeps the portable Windows build self-contained, so end users do
+# not need to install a separate Visual C++ Redistributable package.
+if(MSVC)
+  set(_vc_runtime_arch "${CMAKE_GENERATOR_PLATFORM}")
+  if(NOT _vc_runtime_arch)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+      set(_vc_runtime_arch "x64")
+    else()
+      set(_vc_runtime_arch "x86")
+    endif()
+  endif()
+
+  cmake_host_system_information(RESULT _vs_install_dir QUERY VS_17_DIR)
+  file(GLOB _vc_runtime_dirs LIST_DIRECTORIES TRUE
+    "${_vs_install_dir}/VC/Redist/MSVC/*/${_vc_runtime_arch}/Microsoft.VC*.CRT")
+  list(SORT _vc_runtime_dirs)
+  list(REVERSE _vc_runtime_dirs)
+
+  if(NOT _vc_runtime_dirs)
+    message(FATAL_ERROR "Microsoft Visual C++ runtime files were not found.")
+  endif()
+
+  list(GET _vc_runtime_dirs 0 _vc_runtime_dir)
+  file(GLOB _vc_runtime_dlls "${_vc_runtime_dir}/*.dll")
+  install(FILES ${_vc_runtime_dlls}
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"
