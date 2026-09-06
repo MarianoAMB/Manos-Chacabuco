@@ -69,8 +69,12 @@ internas.
 
 En **Configuración → Sincronización** podés conectar una cuenta de Google para
 mantener los mismos datos en Android y Windows. Usá la misma cuenta en ambos
-equipos. Si una misma información fue editada en los dos dispositivos, la app
-te mostrará ambas versiones para que elijas cuál conservar.
+equipos. La app muestra todos los dispositivos vinculados, su última
+sincronización y cuántos productos, materias primas y presupuestos tiene cada
+uno. En el dispositivo actual podés tocar **Cambiar nombre** y poner, por
+ejemplo, “Celular de Laura” o “PC del taller”. Si una misma información fue
+editada de forma diferente en varios dispositivos, verás cada versión con su
+equipo y fecha para elegir cuál conservar.
 
 ## Si no hay Internet
 

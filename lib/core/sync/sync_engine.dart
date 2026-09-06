@@ -32,11 +32,32 @@ final class SyncEngine {
       }
 
       var uploaded = 0;
+      final uploadedEnvelopes = <SyncEnvelope>[];
+      final localDevices = _local is DeviceSyncLocalStore
+          ? _local as DeviceSyncLocalStore
+          : null;
+      final remoteDevices = _remote is DeviceSyncRemoteStore
+          ? _remote as DeviceSyncRemoteStore
+          : null;
+      final sendingDevice = localDevices == null || remoteDevices == null
+          ? null
+          : await localDevices.buildCurrentDeviceSnapshot(
+              recentChanges: const [],
+            );
       while (true) {
         final pending = await _local.pending();
         if (pending.isEmpty) break;
         for (final change in pending) {
-          for (final asset in change.envelope.assets) {
+          final envelope = sendingDevice == null
+              ? change.envelope
+              : change.envelope.withDeviceSnapshot(sendingDevice);
+          final effectiveChange = identical(envelope, change.envelope)
+              ? change
+              : PendingSyncEnvelope(
+                  envelope: envelope,
+                  outboxIds: change.outboxIds,
+                );
+          for (final asset in envelope.assets) {
             if (!await _remote.hasAsset(asset.hash)) {
               final bytes = await _local.readAsset(asset);
               if (bytes == null) {
@@ -47,10 +68,38 @@ final class SyncEngine {
               await _remote.uploadAsset(asset, bytes);
             }
           }
-          await _remote.push(change.envelope);
-          await _local.markPushed(change);
+          await _remote.push(envelope);
+          await _local.markPushed(effectiveChange);
+          uploadedEnvelopes.add(envelope);
           uploaded++;
         }
+      }
+
+      if (localDevices != null && remoteDevices != null) {
+        final recentChanges = [
+          for (final envelope in uploadedEnvelopes)
+            SyncDeviceChange.fromEnvelope(envelope),
+        ]..sort((left, right) => right.occurredAt.compareTo(left.occurredAt));
+        final current = await localDevices.buildCurrentDeviceSnapshot(
+          recentChanges: recentChanges.take(50).toList(growable: false),
+        );
+        await remoteDevices.publishDeviceSnapshot(current);
+        final currentId = await _local.deviceId();
+        final snapshots =
+            [
+              for (final snapshot in await remoteDevices.fetchDeviceSnapshots())
+                snapshot.copyWith(isCurrent: snapshot.deviceId == currentId),
+            ]..sort((left, right) {
+              if (left.isCurrent != right.isCurrent) {
+                return left.isCurrent ? -1 : 1;
+              }
+              final leftTime = left.lastSyncedAt;
+              final rightTime = right.lastSyncedAt;
+              if (leftTime == null) return rightTime == null ? 0 : 1;
+              if (rightTime == null) return -1;
+              return rightTime.compareTo(leftTime);
+            });
+        await localDevices.saveDeviceSnapshots(snapshots);
       }
       return SyncRunResult(
         uploaded: uploaded,
@@ -69,10 +118,18 @@ final class SyncEngine {
       final cached = depthCache[change.revision];
       if (cached != null) return cached;
       if (!visiting.add(change.revision)) return 0;
-      final parent = change.baseRevision == null
-          ? null
-          : byRevision[change.baseRevision];
-      final result = parent == null ? 0 : depth(parent, visiting) + 1;
+      var result = 0;
+      final dependencies = <String>{
+        if (change.baseRevision case final String revision) revision,
+        ...change.resolvedRevisions,
+      };
+      for (final revision in dependencies) {
+        final parent = byRevision[revision];
+        if (parent == null) continue;
+        final candidate = depth(parent, visiting) + 1;
+        if (candidate > result) result = candidate;
+      }
+      visiting.remove(change.revision);
       depthCache[change.revision] = result;
       return result;
     }

@@ -7,13 +7,15 @@ import 'package:http/http.dart' as http;
 import '../../core/sync/sync_contracts.dart';
 import '../../domain/sync/sync_models.dart';
 
-final class GoogleDriveRemoteSyncStore implements RemoteSyncStore {
+final class GoogleDriveRemoteSyncStore
+    implements RemoteSyncStore, DeviceSyncRemoteStore {
   GoogleDriveRemoteSyncStore(http.Client client)
     : _api = drive.DriveApi(client);
 
   static const appDataScope = drive.DriveApi.driveAppdataScope;
   static const _changePrefix = 'mc-change-';
   static const _assetPrefix = 'mc-asset-';
+  static const _devicePrefix = 'mc-device-';
 
   final drive.DriveApi _api;
 
@@ -83,6 +85,97 @@ final class GoogleDriveRemoteSyncStore implements RemoteSyncStore {
     return null;
   }
 
+  @override
+  Future<void> publishDeviceSnapshot(SyncDeviceSnapshot snapshot) async {
+    final name = '$_devicePrefix${snapshot.deviceId}.json';
+    final bytes = Uint8List.fromList(
+      utf8.encode(jsonEncode(snapshot.toJson())),
+    );
+    final existing = await _list("name contains '${_escape(name)}'");
+    drive.File? exact;
+    for (final file in existing) {
+      if (file.name == name) {
+        exact = file;
+        break;
+      }
+    }
+    final appProperties = <String, String>{
+      'kind': 'deviceSnapshot',
+      'deviceId': snapshot.deviceId,
+      'platform': snapshot.platform,
+    };
+    final metadata = drive.File(
+      name: name,
+      mimeType: 'application/json',
+      appProperties: appProperties,
+    );
+    if (exact?.id case final String fileId) {
+      await _api.files.update(
+        metadata,
+        fileId,
+        uploadMedia: drive.Media(
+          Stream<List<int>>.value(bytes),
+          bytes.length,
+          contentType: 'application/json',
+        ),
+        $fields: 'id,modifiedTime',
+      );
+      return;
+    }
+    await _upload(
+      name,
+      'application/json',
+      bytes,
+      appProperties: appProperties,
+    );
+  }
+
+  @override
+  Future<List<SyncDeviceSnapshot>> fetchDeviceSnapshots() async {
+    final files = await _list("name contains '$_devicePrefix'");
+    final snapshots = <String, SyncDeviceSnapshot>{};
+    for (final file in files) {
+      final name = file.name;
+      final id = file.id;
+      if (name == null ||
+          id == null ||
+          !name.startsWith(_devicePrefix) ||
+          !name.endsWith('.json')) {
+        continue;
+      }
+      try {
+        final bytes = await _download(id);
+        final decoded = jsonDecode(utf8.decode(bytes));
+        if (decoded is! Map) continue;
+        final snapshot = SyncDeviceSnapshot.fromJson(
+          Map<String, Object?>.from(decoded),
+        );
+        final candidate = snapshot.copyWith(
+          lastSyncedAt: file.modifiedTime?.toUtc(),
+          isCurrent: false,
+        );
+        final previous = snapshots[candidate.deviceId];
+        final previousTime = previous?.lastSyncedAt;
+        final candidateTime = candidate.lastSyncedAt;
+        if (previous == null ||
+            (candidateTime != null &&
+                (previousTime == null ||
+                    candidateTime.isAfter(previousTime)))) {
+          snapshots[candidate.deviceId] = candidate;
+        }
+      } on FormatException {
+        // Un manifiesto dañado no debe impedir sincronizar los datos reales.
+      } on TypeError {
+        // Ignora archivos ajenos o de un formato anterior no reconocible.
+      } on ArgumentError {
+        // Ignora valores de enum o fechas que no pertenezcan al formato vigente.
+      } on UnsupportedError {
+        // Una app anterior puede seguir sincronizando aunque vea un manifiesto nuevo.
+      }
+    }
+    return snapshots.values.toList(growable: false);
+  }
+
   Future<bool> _exists(String nameOrPrefix) async {
     final files = await _list("name contains '${_escape(nameOrPrefix)}'");
     return files.any((file) => file.name?.startsWith(nameOrPrefix) == true);
@@ -97,7 +190,7 @@ final class GoogleDriveRemoteSyncStore implements RemoteSyncStore {
         q: query,
         pageSize: 1000,
         pageToken: pageToken,
-        $fields: 'nextPageToken,files(id,name,appProperties)',
+        $fields: 'nextPageToken,files(id,name,modifiedTime,appProperties)',
       );
       result.addAll(page.files ?? const []);
       pageToken = page.nextPageToken;

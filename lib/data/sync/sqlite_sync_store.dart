@@ -9,11 +9,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/app_info.dart';
 import '../../core/database/app_database.dart';
 import '../../core/sync/sync_contracts.dart';
 import '../../domain/sync/sync_models.dart';
 
-final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
+final class SqliteSyncStore
+    implements LocalSyncStore, SyncAccountStore, DeviceSyncLocalStore {
   SqliteSyncStore({
     required AppDatabase database,
     required Directory photoDirectory,
@@ -31,6 +33,9 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
   final Directory _logoDirectory;
   final Uuid _uuid;
   final DateTime Function() _now;
+
+  static const _deviceNameKey = 'sync_device_name';
+  static const _deviceSnapshotsKey = 'sync_device_snapshots';
 
   static Future<SqliteSyncStore> openDefault(AppDatabase database) async {
     final support = await getApplicationSupportDirectory();
@@ -64,6 +69,108 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
       'updated_at': _timestamp(_now()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     return value;
+  }
+
+  @override
+  Future<SyncDeviceSnapshot> buildCurrentDeviceSnapshot({
+    required List<SyncDeviceChange> recentChanges,
+  }) async {
+    final id = await deviceId();
+    final cached = await loadDeviceSnapshots();
+    final previousOwn = cached.where((snapshot) => snapshot.deviceId == id);
+    final changesById = <String, SyncDeviceChange>{
+      if (previousOwn.isNotEmpty)
+        for (final change in previousOwn.first.recentChanges)
+          change.changeId: change,
+      for (final change in recentChanges) change.changeId: change,
+    };
+    final effectiveChanges = changesById.values.toList(growable: false)
+      ..sort((left, right) => right.occurredAt.compareTo(left.occurredAt));
+    final counts = await Future.wait<int>([
+      _activeCount('products'),
+      _activeCount('materials'),
+      _activeCount('quotes', hasActiveFlag: false),
+    ]);
+    return SyncDeviceSnapshot(
+      deviceId: id,
+      name: await _deviceName(id),
+      platform: _platformName,
+      appVersion: AppInfo.version,
+      lastSyncedAt: _now().toUtc(),
+      summary: SyncDataSummary(
+        products: counts[0],
+        materials: counts[1],
+        quotes: counts[2],
+      ),
+      recentChanges: List<SyncDeviceChange>.unmodifiable(
+        effectiveChanges.take(50),
+      ),
+      isCurrent: true,
+    );
+  }
+
+  @override
+  Future<List<SyncDeviceSnapshot>> loadDeviceSnapshots() async {
+    final rows = await _database.database.query(
+      'sync_state',
+      columns: const ['value'],
+      where: 'key = ?',
+      whereArgs: const [_deviceSnapshotsKey],
+      limit: 1,
+    );
+    if (rows.isEmpty || rows.single['value'] is! String) return const [];
+    try {
+      final decoded = jsonDecode(rows.single['value']! as String);
+      if (decoded is! List) return const [];
+      final currentId = await deviceId();
+      return [
+        for (final item in decoded)
+          if (item is Map)
+            SyncDeviceSnapshot.fromJson(Map<String, Object?>.from(item))
+                .copyWith(isCurrent: item['deviceId'] == currentId),
+      ];
+    } on Object {
+      // A damaged optional cache must never prevent the local database opening.
+      return const [];
+    }
+  }
+
+  @override
+  Future<void> saveDeviceSnapshots(List<SyncDeviceSnapshot> snapshots) async {
+    await _database.database.insert('sync_state', {
+      'key': _deviceSnapshotsKey,
+      'value': jsonEncode([
+        for (final snapshot in snapshots) snapshot.toJson(),
+      ]),
+      'updated_at': _timestamp(_now()),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  @override
+  Future<void> renameCurrentDevice(String name) async {
+    final value = name.trim();
+    if (value.isEmpty || value.length > 50) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'Usá un nombre de entre 1 y 50 caracteres.',
+      );
+    }
+    final id = await deviceId();
+    await _database.database.insert('sync_state', {
+      'key': _deviceNameKey,
+      'value': value,
+      'updated_at': _timestamp(_now()),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    final snapshots = await loadDeviceSnapshots();
+    final hasCurrent = snapshots.any((snapshot) => snapshot.deviceId == id);
+    final updated = [
+      for (final snapshot in snapshots)
+        snapshot.deviceId == id ? snapshot.copyWith(name: value) : snapshot,
+      if (!hasCurrent)
+        await buildCurrentDeviceSnapshot(recentChanges: const []),
+    ];
+    await saveDeviceSnapshots(updated);
   }
 
   @override
@@ -109,6 +216,22 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
       final isDelete = root == null || deletedAtValue != null;
       final state = await _entityState(entityType, entityId);
       final assets = await _assetReferences(entityType, payload);
+      String? metadataBaseRevision;
+      final resolvedRevisionSet = <String>{};
+      for (final row in entries) {
+        final metadata = _outboxMetadata(row['payload_json']);
+        if (metadata['baseRevision'] case final String revision
+            when revision.isNotEmpty) {
+          metadataBaseRevision = revision;
+        }
+        for (final value
+            in (metadata['resolvedRevisions'] as List<Object?>?) ?? const []) {
+          if (value is String && value.isNotEmpty) {
+            resolvedRevisionSet.add(value);
+          }
+        }
+      }
+      final resolvedRevisions = resolvedRevisionSet.toList(growable: false);
       final occurredAt = DateTime.parse(latest['occurred_at']! as String)
           .toUtc();
       result.add(
@@ -127,13 +250,27 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
                       ? occurredAt
                       : DateTime.parse(deletedAtValue)
                 : null,
-            baseRevision: state?.baseRevision,
+            baseRevision: metadataBaseRevision ?? state?.baseRevision,
+            resolvedRevisions: resolvedRevisions,
             assets: assets,
           ),
         ),
       );
     }
-    return result;
+    if (result.isEmpty) return result;
+    final snapshot = await buildCurrentDeviceSnapshot(
+      recentChanges: [
+        for (final pending in result)
+          SyncDeviceChange.fromEnvelope(pending.envelope),
+      ],
+    );
+    return [
+      for (final pending in result)
+        PendingSyncEnvelope(
+          envelope: pending.envelope.withDeviceSnapshot(snapshot),
+          outboxIds: pending.outboxIds,
+        ),
+    ];
   }
 
   @override
@@ -148,31 +285,80 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
     if (await _isProcessed(envelope.changeId)) {
       return RemoteIntegrationResult.ignored;
     }
-    final existingConflict = Sqflite.firstIntValue(
-      await _database.database.rawQuery(
-        '''
-          SELECT COUNT(*) FROM sync_conflicts
-          WHERE entity_type = ? AND entity_id = ? AND resolved_at IS NULL
-        ''',
-        [envelope.entityType, envelope.entityId],
-      ),
-    );
-    if ((existingConflict ?? 0) > 0) {
+
+    final ownDevice = envelope.deviceId == await deviceId();
+    if (ownDevice) {
+      await _acknowledgeOwnRemote(envelope);
       return RemoteIntegrationResult.ignored;
     }
 
     for (final asset in envelope.assets) {
       await _ensureAsset(asset, downloadAsset);
     }
-    final state = await _entityState(envelope.entityType, envelope.entityId);
-    if (state?.baseRevision == envelope.revision) {
+    final existingCandidates = await _unresolvedConflictCandidates(
+      envelope.entityType,
+      envelope.entityId,
+    );
+    if (existingCandidates.any(
+      (candidate) =>
+          candidate.envelope.changeId == envelope.changeId ||
+          candidate.envelope.revision == envelope.revision,
+    )) {
       await _markProcessed(envelope);
       return RemoteIntegrationResult.ignored;
     }
-
-    final ownDevice = envelope.deviceId == await deviceId();
-    if (ownDevice) {
-      await _acknowledgeOwnRemote(envelope);
+    if (existingCandidates.isNotEmpty) {
+      final existingEnvelopes = [
+        for (final candidate in existingCandidates) candidate.envelope,
+      ];
+      final isOlderThanExisting = existingEnvelopes.any(
+        (candidate) =>
+            candidate.baseRevision == envelope.revision ||
+            candidate.resolvedRevisions.contains(envelope.revision),
+      );
+      if (isOlderThanExisting) {
+        await _markProcessed(envelope);
+        return RemoteIntegrationResult.ignored;
+      }
+      final supersededConflictIds = [
+        for (final candidate in existingCandidates)
+          if (envelope.baseRevision == candidate.envelope.revision ||
+              envelope.resolvedRevisions.contains(candidate.envelope.revision))
+            candidate.id,
+      ];
+      final state = await _entityState(envelope.entityType, envelope.entityId);
+      final localPending = await _pendingFor(
+        envelope.entityType,
+        envelope.entityId,
+      );
+      final resolvedHeads = <String>{
+        if (envelope.baseRevision case final String revision) revision,
+        ...envelope.resolvedRevisions,
+      };
+      final conflictHeads = <String>{
+        if (state?.baseRevision case final String revision) revision,
+        for (final candidate in existingEnvelopes) candidate.revision,
+      };
+      if (!localPending &&
+          conflictHeads.isNotEmpty &&
+          conflictHeads.every(resolvedHeads.contains)) {
+        await _applyAndRecord(
+          envelope,
+          clearPending: true,
+          resolveConflicts: true,
+        );
+        return RemoteIntegrationResult.applied;
+      }
+      await _createConflict(
+        envelope,
+        await _snapshot(envelope.entityType, envelope.entityId),
+        supersededConflictIds: supersededConflictIds,
+      );
+      return RemoteIntegrationResult.conflict;
+    }
+    final state = await _entityState(envelope.entityType, envelope.entityId);
+    if (state?.baseRevision == envelope.revision) {
+      await _markProcessed(envelope);
       return RemoteIntegrationResult.ignored;
     }
 
@@ -241,58 +427,142 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
       where: 'resolved_at IS NULL',
       orderBy: 'created_at',
     );
-    return [
-      for (final row in rows)
+    final grouped = <String, List<Map<String, Object?>>>{};
+    for (final row in rows) {
+      final key = '${row['entity_type']}\u0000${row['entity_id']}';
+      grouped.putIfAbsent(key, () => []).add(row);
+    }
+    final result = <SyncConflict>[];
+    for (final entries in grouped.values) {
+      final first = entries.first;
+      final envelopesByRevision = <String, SyncEnvelope>{};
+      for (final row in entries) {
+        final envelope = _decodeEnvelope(
+          row['remote_envelope_json']! as String,
+        );
+        envelopesByRevision[envelope.revision] = envelope;
+      }
+      final envelopes = envelopesByRevision.values.toList(growable: false);
+      final entityType = first['entity_type']! as String;
+      final entityId = first['entity_id']! as String;
+      final localPayload = await _snapshot(entityType, entityId);
+      result.add(
         SyncConflict(
-          id: row['id']! as String,
-          entityType: row['entity_type']! as String,
-          entityId: row['entity_id']! as String,
-          localPayload: Map<String, Object?>.from(
-            jsonDecode(row['local_payload_json']! as String) as Map,
-          ),
-          remoteEnvelope: SyncEnvelope.fromJson(
-            Map<String, Object?>.from(
-              jsonDecode(row['remote_envelope_json']! as String) as Map,
-            ),
-          ),
-          createdAt: DateTime.parse(row['created_at']! as String),
+          id: first['id']! as String,
+          entityType: entityType,
+          entityId: entityId,
+          localPayload: localPayload,
+          remoteEnvelope: envelopes.first,
+          additionalRemoteEnvelopes: envelopes.skip(1).toList(growable: false),
+          createdAt: DateTime.parse(first['created_at']! as String),
+          localOccurredAt: _payloadUpdatedAt(localPayload),
         ),
-    ];
+      );
+    }
+    return result;
   }
 
   @override
   Future<void> resolveConflict(
     String conflictId,
-    SyncConflictResolution resolution,
-  ) async {
-    final rows = await _database.database.query(
+    SyncConflictResolution resolution, {
+    String? remoteRevision,
+  }) async {
+    final selectedRows = await _database.database.query(
       'sync_conflicts',
       where: 'id = ? AND resolved_at IS NULL',
       whereArgs: [conflictId],
       limit: 1,
     );
-    if (rows.isEmpty) return;
-    final row = rows.single;
-    final envelope = SyncEnvelope.fromJson(
-      Map<String, Object?>.from(
-        jsonDecode(row['remote_envelope_json']! as String) as Map,
-      ),
-    );
-    if (resolution == SyncConflictResolution.useRemote) {
-      await _applyAndRecord(envelope, clearPending: true);
-    } else {
-      final timestamp = _timestamp(_now());
-      await _database.database.transaction((transaction) async {
-        await _saveEntityState(transaction, envelope, status: 'pendingUpload');
-        await _insertProcessed(transaction, envelope, timestamp);
-      });
-    }
-    await _database.database.update(
+    if (selectedRows.isEmpty) return;
+    final selectedRow = selectedRows.single;
+    final entityType = selectedRow['entity_type']! as String;
+    final entityId = selectedRow['entity_id']! as String;
+    final rows = await _database.database.query(
       'sync_conflicts',
-      {'resolved_at': _timestamp(_now())},
-      where: 'id = ?',
-      whereArgs: [conflictId],
+      where: 'entity_type = ? AND entity_id = ? AND resolved_at IS NULL',
+      whereArgs: [entityType, entityId],
+      orderBy: 'created_at',
     );
+    final envelopes = <SyncEnvelope>[
+      for (final row in rows)
+        _decodeEnvelope(row['remote_envelope_json']! as String),
+    ];
+    final selectedEnvelope = remoteRevision == null
+        ? _decodeEnvelope(selectedRow['remote_envelope_json']! as String)
+        : envelopes.firstWhere(
+            (envelope) => envelope.revision == remoteRevision,
+            orElse: () =>
+                throw StateError('La versión elegida ya no está disponible.'),
+          );
+    final state = await _entityState(entityType, entityId);
+    final selectedRemote = resolution == SyncConflictResolution.useRemote;
+    final baseRevision = selectedRemote
+        ? selectedEnvelope.revision
+        : state?.baseRevision;
+    final selectedPayload = selectedRemote
+        ? selectedEnvelope.payload
+        : await _snapshot(entityType, entityId);
+    final resolvedRevisions = <String>{
+      if (state?.baseRevision case final String revision) revision,
+      for (final envelope in envelopes) ...[
+        if (envelope.baseRevision case final String revision) revision,
+        envelope.revision,
+        ...envelope.resolvedRevisions,
+      ],
+    }..remove(baseRevision);
+    final timestamp = _timestamp(_now());
+    await _database.database.transaction((transaction) async {
+      if (selectedRemote) {
+        await transaction.update('sync_runtime', {
+          'remote_apply': 1,
+        }, where: 'singleton_id = 1');
+        try {
+          await _applyPayload(transaction, selectedEnvelope);
+        } finally {
+          await transaction.update('sync_runtime', {
+            'remote_apply': 0,
+          }, where: 'singleton_id = 1');
+        }
+        await transaction.update(
+          'sync_outbox',
+          {'acknowledged_at': timestamp},
+          where:
+              'entity_type = ? AND entity_id = ? AND acknowledged_at IS NULL',
+          whereArgs: [entityType, entityId],
+        );
+      }
+      for (final envelope in envelopes) {
+        await _insertProcessed(transaction, envelope, timestamp);
+      }
+      await transaction.insert('sync_entity_state', {
+        'entity_type': entityType,
+        'entity_id': entityId,
+        'base_revision': baseRevision,
+        'base_hash': syncHashJson(selectedPayload),
+        'sync_status': 'pendingUpload',
+        'error_message': null,
+        'updated_at': timestamp,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await transaction.update(
+        'sync_conflicts',
+        {'resolved_at': timestamp},
+        where: 'entity_type = ? AND entity_id = ? AND resolved_at IS NULL',
+        whereArgs: [entityType, entityId],
+      );
+      await transaction.insert('sync_outbox', {
+        'id': _uuid.v4(),
+        'entity_type': entityType,
+        'entity_id': entityId,
+        'operation': 'upsert',
+        'payload_json': jsonEncode({
+          'baseRevision': baseRevision,
+          'resolvedRevisions': resolvedRevisions.toList()..sort(),
+        }),
+        'occurred_at': timestamp,
+        'acknowledged_at': null,
+      });
+    });
   }
 
   @override
@@ -311,6 +581,9 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
     ];
     final timestamp = _timestamp(_now());
     await _database.database.transaction((transaction) async {
+      await transaction.update('sync_outbox', {
+        'payload_json': '{}',
+      }, where: 'acknowledged_at IS NULL');
       await transaction.delete(
         'sync_outbox',
         where: 'acknowledged_at IS NOT NULL',
@@ -318,6 +591,11 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
       await transaction.delete('sync_entity_state');
       await transaction.delete('sync_remote_changes');
       await transaction.delete('sync_conflicts');
+      await transaction.delete(
+        'sync_state',
+        where: 'key = ?',
+        whereArgs: const [_deviceSnapshotsKey],
+      );
       for (final source in sources) {
         await transaction.rawInsert(
           '''
@@ -523,6 +801,27 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
           0) >
       0;
 
+  Future<List<({String id, SyncEnvelope envelope})>>
+  _unresolvedConflictCandidates(String entityType, String entityId) async {
+    final rows = await _database.database.query(
+      'sync_conflicts',
+      columns: const ['id', 'remote_envelope_json'],
+      where: 'entity_type = ? AND entity_id = ? AND resolved_at IS NULL',
+      whereArgs: [entityType, entityId],
+    );
+    return [
+      for (final row in rows)
+        (
+          id: row['id']! as String,
+          envelope: _decodeEnvelope(row['remote_envelope_json']! as String),
+        ),
+    ];
+  }
+
+  SyncEnvelope _decodeEnvelope(String encoded) => SyncEnvelope.fromJson(
+    Map<String, Object?>.from(jsonDecode(encoded) as Map),
+  );
+
   Future<_EntityState?> _entityState(String type, String id) async {
     final rows = await _database.database.query(
       'sync_entity_state',
@@ -540,6 +839,7 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
   Future<void> _applyAndRecord(
     SyncEnvelope envelope, {
     bool clearPending = false,
+    bool resolveConflicts = false,
   }) async {
     final timestamp = _timestamp(_now());
     await _database.database.transaction((transaction) async {
@@ -559,6 +859,14 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
           {'acknowledged_at': timestamp},
           where:
               'entity_type = ? AND entity_id = ? AND acknowledged_at IS NULL',
+          whereArgs: [envelope.entityType, envelope.entityId],
+        );
+      }
+      if (resolveConflicts) {
+        await transaction.update(
+          'sync_conflicts',
+          {'resolved_at': timestamp},
+          where: 'entity_type = ? AND entity_id = ? AND resolved_at IS NULL',
           whereArgs: [envelope.entityType, envelope.entityId],
         );
       }
@@ -751,14 +1059,24 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
 
   Future<void> _createConflict(
     SyncEnvelope envelope,
-    Map<String, Object?> localPayload,
-  ) async {
+    Map<String, Object?> localPayload, {
+    List<String> supersededConflictIds = const [],
+  }) async {
     final timestamp = _timestamp(_now());
     final currentState = await _entityState(
       envelope.entityType,
       envelope.entityId,
     );
     await _database.database.transaction((transaction) async {
+      if (supersededConflictIds.isNotEmpty) {
+        await transaction.update(
+          'sync_conflicts',
+          {'resolved_at': timestamp},
+          where:
+              'id IN (${List.filled(supersededConflictIds.length, '?').join(',')})',
+          whereArgs: supersededConflictIds,
+        );
+      }
       await transaction.insert('sync_conflicts', {
         'id': _uuid.v4(),
         'entity_type': envelope.entityType,
@@ -777,6 +1095,7 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
         'error_message': null,
         'updated_at': timestamp,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await _insertProcessed(transaction, envelope, timestamp);
     });
   }
 
@@ -814,6 +1133,72 @@ final class SqliteSyncStore implements LocalSyncStore, SyncAccountStore {
       'revision': envelope.revision,
       'processed_at': timestamp,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<int> _activeCount(String table, {bool hasActiveFlag = true}) async =>
+      Sqflite.firstIntValue(
+        await _database.database.rawQuery(
+          'SELECT COUNT(*) FROM $table '
+          'WHERE deleted_at IS NULL${hasActiveFlag ? ' AND is_active = 1' : ''}',
+        ),
+      ) ??
+      0;
+
+  Future<String> _deviceName(String id) async {
+    final rows = await _database.database.query(
+      'sync_state',
+      columns: const ['value'],
+      where: 'key = ?',
+      whereArgs: const [_deviceNameKey],
+      limit: 1,
+    );
+    final stored = rows.isEmpty ? null : rows.single['value'];
+    if (stored is String) {
+      final trimmed = stored.trim();
+      if (trimmed.isNotEmpty) return trimmed;
+    }
+    final compactId = id.replaceAll('-', '');
+    final suffix =
+        (compactId.length <= 4 ? compactId : compactId.substring(0, 4))
+            .toUpperCase();
+    final hostname = Platform.localHostname.trim();
+    final generated = Platform.isWindows && hostname.isNotEmpty
+        ? 'PC $hostname'
+        : Platform.isWindows
+        ? 'PC $suffix'
+        : Platform.isAndroid
+        ? 'Android $suffix'
+        : '${Platform.operatingSystem} $suffix';
+    await _database.database.insert('sync_state', {
+      'key': _deviceNameKey,
+      'value': generated,
+      'updated_at': _timestamp(_now()),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return generated;
+  }
+
+  String get _platformName => Platform.isWindows
+      ? 'Windows'
+      : Platform.isAndroid
+      ? 'Android'
+      : Platform.operatingSystem;
+
+  Map<String, Object?> _outboxMetadata(Object? raw) {
+    if (raw is! String || raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map
+          ? Map<String, Object?>.from(decoded)
+          : const <String, Object?>{};
+    } on Object {
+      return const {};
+    }
+  }
+
+  DateTime? _payloadUpdatedAt(Map<String, Object?> payload) {
+    final root = payload['root'];
+    if (root is! Map || root['updated_at'] is! String) return null;
+    return DateTime.tryParse(root['updated_at']! as String)?.toUtc();
   }
 
   Map<String, Object?>? _mapOrNull(Object? value) =>

@@ -125,17 +125,39 @@ separados, identificados por SHA-256 y descargados de forma atómica. Los export
 PDF/PNG, builds, temporales y logs quedan fuera.
 
 `SyncEngine` primero incorpora cambios desconocidos y después publica el
-outbox. Cambios independientes se combinan; dos ramas sobre la misma revisión
-crean un conflicto explícito y el resto continúa. No se usa la hora como
-last-write-wins. Elegir la versión local crea una nueva revisión que resuelve
-ambas ramas; elegir la remota la aplica sin disparar otro cambio local. Las
-eliminaciones viajan como tombstones y no se purgan automáticamente.
+outbox. Cambios independientes se combinan; las ramas sobre la misma revisión
+crean un conflicto explícito y el resto continúa. Un conflicto conserva todas
+las versiones remotas recibidas para la entidad, junto con su dispositivo y
+fecha, en filas existentes de `sync_conflicts`. No se usa la hora como
+last-write-wins. La versión elegida genera una nueva revisión de unión con todas
+las revisiones descartadas en `resolvedRevisions`; de ese modo, cada dispositivo
+reconoce el mismo resultado y el conflicto no reaparece. Las eliminaciones
+viajan como tombstones y no se purgan automáticamente.
+
+La identidad local estable continúa en `sync_state`, igual que el cache JSON de
+los dispositivos conocidos. Esto mantiene el esquema SQLite en **v8** y permite
+actualizar sin alterar productos, fotos, presupuestos ni cambios pendientes.
+Una compilación anterior todavía puede abrir la base, pero no debe usarse para
+resolver un conflicto multidispositivo iniciado por esta versión. Cada sobre
+agrega de forma opcional el nombre, la plataforma, la versión de app y los
+conteos activos del equipo que lo creó; los lectores anteriores ignoran estos
+campos.
 
 Google Drive es sólo el transporte. Usa `appDataFolder` con el scope mínimo
 `drive.appdata`; Android autentica con Google Sign-In y Windows usa OAuth de app
 nativa con navegador, loopback en `127.0.0.1`, state y PKCE S256. Los refresh
 tokens de Windows quedan cifrados con DPAPI para el usuario actual. La configuración externa se
 documenta en `docs/GOOGLE_DRIVE_SYNC_SETUP.md`.
+
+Los resúmenes de dispositivos se publican en archivos independientes
+`mc-device-*`. No reemplazan ni eliminan los cambios inmutables `mc-change-*` o
+los assets `mc-asset-*`, y una versión anterior los ignora porque consulta otro
+prefijo. Cada dispositivo actualiza exclusivamente su propio manifiesto después
+de una sincronización exitosa; las fechas se guardan en UTC y los conteos se
+calculan desde las entidades locales activas. El nombre del equipo se puede
+cambiar desde la app. Android excluye la base, los archivos y las preferencias
+de Auto Backup y de la transferencia directa: así dos teléfonos no heredan el
+mismo `device_id`; Google Drive recompone los datos comerciales.
 
 El inicio local no depende de OAuth ni de red. La sincronización se intenta al
 iniciar con una cuenta previa, al recuperar conectividad, al volver al frente,

@@ -32,6 +32,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   SyncConnectionStatus _status = SyncConnectionStatus.disconnected;
   SyncAuthenticatedSession? _session;
   List<SyncConflict> _conflicts = const [];
+  List<SyncDeviceSnapshot> _devices = const [];
   int _pendingCount = 0;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _periodicTimer;
@@ -44,6 +45,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   SyncAccountState get account => _account;
   SyncConnectionStatus get status => _status;
   List<SyncConflict> get conflicts => _conflicts;
+  List<SyncDeviceSnapshot> get devices => _devices;
   int get pendingCount => _pendingCount;
   bool get isConfigured => _authenticator.isConfigured;
   bool get canConfigure => _authenticator is ConfigurableSyncAuthenticator;
@@ -221,9 +223,14 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> resolveConflict(
     SyncConflict conflict,
-    SyncConflictResolution resolution,
-  ) async {
-    await _localStore.resolveConflict(conflict.id, resolution);
+    SyncConflictResolution resolution, {
+    String? remoteRevision,
+  }) async {
+    await _localStore.resolveConflict(
+      conflict.id,
+      resolution,
+      remoteRevision: remoteRevision,
+    );
     await _refreshLocalState();
     if (_onDataApplied != null) await _onDataApplied();
     _status = _conflicts.isNotEmpty
@@ -258,6 +265,38 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _refreshLocalState() async {
     _pendingCount = await _localStore.pendingCount();
     _conflicts = await _localStore.conflicts();
+    if (_localStore case final DeviceSyncLocalStore deviceStore) {
+      final devices = [...await deviceStore.loadDeviceSnapshots()];
+      devices.sort((left, right) {
+        if (left.isCurrent != right.isCurrent) return left.isCurrent ? -1 : 1;
+        final leftDate = left.lastSyncedAt;
+        final rightDate = right.lastSyncedAt;
+        if (leftDate == null) return rightDate == null ? 0 : 1;
+        if (rightDate == null) return -1;
+        return rightDate.compareTo(leftDate);
+      });
+      _devices = List.unmodifiable(devices);
+    } else {
+      _devices = const [];
+    }
+  }
+
+  SyncDeviceSnapshot? deviceById(String deviceId) {
+    for (final device in _devices) {
+      if (device.deviceId == deviceId) return device;
+    }
+    return null;
+  }
+
+  Future<void> renameCurrentDevice(String name) async {
+    if (_localStore case final DeviceSyncLocalStore deviceStore) {
+      await deviceStore.renameCurrentDevice(name);
+      await _refreshLocalState();
+      notifyListeners();
+      if (_account.connected && _session != null && _online) {
+        await syncNow();
+      }
+    }
   }
 
   void _connectivityChanged(List<ConnectivityResult> results) {

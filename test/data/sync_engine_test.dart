@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:manos_chacabuco/core/database/app_database.dart';
+import 'package:manos_chacabuco/core/database/database_migrations.dart';
 import 'package:manos_chacabuco/core/sync/sync_contracts.dart';
 import 'package:manos_chacabuco/core/sync/sync_engine.dart';
 import 'package:manos_chacabuco/data/sync/fake_remote_sync_store.dart';
@@ -135,6 +136,244 @@ void main() {
         SyncConflictResolution.useRemote,
       );
       expect(await _productName(b, 'conflicted'), 'Otra edición Windows');
+    },
+  );
+
+  test('tres dispositivos agrupan candidatos y publican una resolución convergente', () async {
+    final remote = FakeRemoteSyncStore();
+    final a = await _Device.open('three-way-a');
+    final b = await _Device.open('three-way-b');
+    final c = await _Device.open('three-way-c');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    addTearDown(c.close);
+
+    await _insertProduct(a, 'three-way', 'Versión inicial');
+    await _sync(a, remote);
+    await _sync(b, remote);
+    await _sync(c, remote);
+
+    await _renameProduct(a, 'three-way', 'Versión PC A');
+    await _renameProduct(b, 'three-way', 'Versión Android B');
+    await _renameProduct(c, 'three-way', 'Versión PC C');
+    final branchA = (await a.store.pending()).singleWhere(
+      (pending) => pending.envelope.entityId == 'three-way',
+    );
+    final branchC = (await c.store.pending()).singleWhere(
+      (pending) => pending.envelope.entityId == 'three-way',
+    );
+    await remote.push(branchA.envelope);
+    await remote.push(branchC.envelope);
+
+    await _sync(b, remote);
+    final conflict = (await b.store.conflicts()).single;
+    expect(conflict.remoteEnvelopes, hasLength(2));
+    expect(
+      conflict.remoteEnvelopes.map((envelope) => envelope.payload.toString()),
+      containsAll([contains('Versión PC A'), contains('Versión PC C')]),
+    );
+
+    await b.store.resolveConflict(
+      conflict.id,
+      SyncConflictResolution.useRemote,
+      remoteRevision: branchC.envelope.revision,
+    );
+    final resolution = (await b.store.pending()).singleWhere(
+      (pending) => pending.envelope.entityId == 'three-way',
+    );
+    expect(resolution.envelope.baseRevision, branchC.envelope.revision);
+    expect(
+      resolution.envelope.resolvedRevisions,
+      contains(branchA.envelope.revision),
+    );
+    await _sync(b, remote);
+    await _sync(a, remote);
+    await _sync(c, remote);
+    await _sync(a, remote);
+    await _sync(b, remote);
+    await _sync(c, remote);
+
+    expect(await _productName(a, 'three-way'), 'Versión PC C');
+    expect(await _productName(b, 'three-way'), 'Versión PC C');
+    expect(await _productName(c, 'three-way'), 'Versión PC C');
+    expect(await a.store.conflicts(), isEmpty);
+    expect(await b.store.conflicts(), isEmpty);
+    expect(await c.store.conflicts(), isEmpty);
+  });
+
+  test('una resolución se integra después de todas las ramas que declara resueltas', () async {
+    final remote = FakeRemoteSyncStore();
+    final seed = await _Device.open('resolved-order-seed');
+    final target = await _Device.open('resolved-order-target');
+    addTearDown(seed.close);
+    addTearDown(target.close);
+
+    await _insertProduct(seed, 'resolved-order', 'Versión inicial');
+    await _sync(seed, remote);
+    await _sync(target, remote);
+    final initial = remote.allChanges.singleWhere(
+      (change) => change.entityId == 'resolved-order',
+    );
+    Map<String, Object?> payload(String name) => {
+      'root': {
+        ...Map<String, Object?>.from(initial.payload['root']! as Map),
+        'name': name,
+      },
+      'usages': const <Object?>[],
+    };
+    final branchA = SyncEnvelope.create(
+      changeId: 'z-branch-a',
+      deviceId: 'device-a',
+      entityType: 'product',
+      entityId: 'resolved-order',
+      operation: SyncOperation.upsert,
+      payload: payload('Versión A'),
+      occurredAt: DateTime.utc(2026, 9, 5, 10),
+      baseRevision: initial.revision,
+      assets: const [],
+    );
+    final branchC = SyncEnvelope.create(
+      changeId: 'y-branch-c',
+      deviceId: 'device-c',
+      entityType: 'product',
+      entityId: 'resolved-order',
+      operation: SyncOperation.upsert,
+      payload: payload('Versión C'),
+      occurredAt: DateTime.utc(2026, 9, 5, 11),
+      baseRevision: initial.revision,
+      assets: const [],
+    );
+    final resolution = SyncEnvelope.create(
+      changeId: 'a-resolution',
+      deviceId: 'device-b',
+      entityType: 'product',
+      entityId: 'resolved-order',
+      operation: SyncOperation.upsert,
+      payload: payload('Versión elegida'),
+      occurredAt: DateTime.utc(2026, 9, 5, 12),
+      baseRevision: initial.revision,
+      resolvedRevisions: [branchA.revision, branchC.revision],
+      assets: const [],
+    );
+    await remote.push(resolution);
+    await remote.push(branchA);
+    await remote.push(branchC);
+
+    await _sync(target, remote);
+
+    expect(await _productName(target, 'resolved-order'), 'Versión elegida');
+    expect(await target.store.conflicts(), isEmpty);
+  });
+
+  test(
+    'un candidato más nuevo reemplaza su versión anterior en el conflicto',
+    () async {
+      final remote = FakeRemoteSyncStore();
+      final seed = await _Device.open('head-seed');
+      final target = await _Device.open('head-target');
+      addTearDown(seed.close);
+      addTearDown(target.close);
+
+      await _insertProduct(seed, 'head-product', 'Versión inicial');
+      await _sync(seed, remote);
+      await _sync(target, remote);
+      await _renameProduct(target, 'head-product', 'Cambio local');
+      final initial = remote.allChanges.singleWhere(
+        (change) => change.entityId == 'head-product',
+      );
+      Map<String, Object?> payload(String name) => {
+        'root': {
+          ...Map<String, Object?>.from(initial.payload['root']! as Map),
+          'name': name,
+        },
+        'usages': const <Object?>[],
+      };
+      final firstRemote = SyncEnvelope.create(
+        changeId: 'remote-first',
+        deviceId: 'remote-device',
+        entityType: 'product',
+        entityId: 'head-product',
+        operation: SyncOperation.upsert,
+        payload: payload('Cambio remoto 1'),
+        occurredAt: DateTime.utc(2026, 9, 5, 10),
+        baseRevision: initial.revision,
+        assets: const [],
+      );
+      final newestRemote = SyncEnvelope.create(
+        changeId: 'remote-newest',
+        deviceId: 'remote-device',
+        entityType: 'product',
+        entityId: 'head-product',
+        operation: SyncOperation.upsert,
+        payload: payload('Cambio remoto 2'),
+        occurredAt: DateTime.utc(2026, 9, 5, 11),
+        baseRevision: firstRemote.revision,
+        assets: const [],
+      );
+      await remote.push(firstRemote);
+      await remote.push(newestRemote);
+
+      await _sync(target, remote);
+
+      final conflict = (await target.store.conflicts()).single;
+      expect(conflict.remoteEnvelopes, hasLength(1));
+      expect(
+        conflict.remoteEnvelope.payload.toString(),
+        contains('Cambio remoto 2'),
+      );
+      await target.store.resolveConflict(
+        conflict.id,
+        SyncConflictResolution.useLocal,
+      );
+      final resolution = (await target.store.pending()).singleWhere(
+        (change) => change.envelope.entityId == 'head-product',
+      );
+      expect(
+        resolution.envelope.resolvedRevisions,
+        containsAll([firstRemote.revision, newestRemote.revision]),
+      );
+      await _sync(target, remote);
+      await _sync(seed, remote);
+      expect(await _productName(seed, 'head-product'), 'Cambio local');
+      expect(await seed.store.conflicts(), isEmpty);
+    },
+  );
+
+  test(
+    'editar antes de subir una resolución conserva todas las ramas resueltas',
+    () async {
+      final remote = FakeRemoteSyncStore();
+      final a = await _Device.open('edit-resolution-a');
+      final b = await _Device.open('edit-resolution-b');
+      addTearDown(a.close);
+      addTearDown(b.close);
+
+      await _insertProduct(a, 'edit-resolution', 'Versión inicial');
+      await _sync(a, remote);
+      await _sync(b, remote);
+      await _renameProduct(a, 'edit-resolution', 'Cambio A');
+      await _renameProduct(b, 'edit-resolution', 'Cambio B');
+      await _sync(a, remote);
+      await _sync(b, remote);
+      final conflict = (await b.store.conflicts()).single;
+
+      await b.store.resolveConflict(
+        conflict.id,
+        SyncConflictResolution.useLocal,
+      );
+      await _renameProduct(b, 'edit-resolution', 'Cambio B posterior');
+      final pending = (await b.store.pending()).singleWhere(
+        (change) => change.envelope.entityId == 'edit-resolution',
+      );
+      expect(
+        pending.envelope.resolvedRevisions,
+        contains(conflict.remoteEnvelope.revision),
+      );
+
+      await _sync(b, remote);
+      await _sync(a, remote);
+      expect(await _productName(a, 'edit-resolution'), 'Cambio B posterior');
+      expect(await a.store.conflicts(), isEmpty);
     },
   );
 
@@ -338,6 +577,16 @@ void main() {
       await controller.connect();
       expect(controller.account.email, 'primera@example.com');
       expect(await device.store.pendingCount(), 0);
+      await device.database.database.insert('sync_outbox', {
+        'id': 'old-account-marker',
+        'entity_type': 'product',
+        'entity_id': 'account-migration',
+        'operation': 'upsert',
+        'payload_json':
+            '{"baseRevision":"old-base","resolvedRevisions":["old-head"]}',
+        'occurred_at': DateTime.utc(2026, 9, 5, 12).toIso8601String(),
+        'acknowledged_at': null,
+      });
       authenticator.email = 'otra@example.com';
       authenticator.remote = secondRemote;
 
@@ -351,6 +600,11 @@ void main() {
         ),
         isTrue,
       );
+      final migratedProduct = secondRemote.allChanges.singleWhere(
+        (change) => change.entityId == 'account-migration',
+      );
+      expect(migratedProduct.baseRevision, isNull);
+      expect(migratedProduct.resolvedRevisions, isEmpty);
 
       final restored = await _Device.open('different-account-restored');
       addTearDown(restored.close);
@@ -359,6 +613,98 @@ void main() {
         await _productName(restored, 'account-migration'),
         'Producto conservado',
       );
+    },
+  );
+
+  test(
+    'cache de dispositivos conserva una base v8 y sus 186 cambios pendientes',
+    () async {
+      final root = await Directory.systemTemp.createTemp('manos-v8-cache-');
+      addTearDown(() async {
+        if (await root.exists()) await root.delete(recursive: true);
+      });
+      final photos = Directory(paths.join(root.path, 'product_photos'));
+      final logos = Directory(paths.join(root.path, 'business_assets'));
+      await photos.create(recursive: true);
+      await logos.create(recursive: true);
+      final databasePath = paths.join(root.path, 'app.db');
+      var database = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: databasePath,
+      );
+      var store = SqliteSyncStore(
+        database: database,
+        photoDirectory: photos,
+        logoDirectory: logos,
+      );
+      await _insertProduct(
+        _Device(database, store, root, photos, logos),
+        'retained-v8',
+        'Producto conservado',
+      );
+      final stableDeviceId = await store.deviceId();
+      await store.save(
+        const SyncAccountState(
+          connected: true,
+          email: 'manoschacabuco@gmail.com',
+        ),
+      );
+      await database.database.delete('sync_outbox');
+      final batch = database.database.batch();
+      for (var index = 0; index < 186; index++) {
+        batch.insert('sync_outbox', {
+          'id': 'retained-change-$index',
+          'entity_type': 'product',
+          'entity_id': 'retained-v8',
+          'operation': 'upsert',
+          'payload_json': '{}',
+          'occurred_at': DateTime.utc(
+            2026,
+            9,
+            5,
+            12,
+          ).add(Duration(milliseconds: index)).toIso8601String(),
+          'acknowledged_at': null,
+        });
+      }
+      await batch.commit(noResult: true);
+      final snapshot = await store.buildCurrentDeviceSnapshot(
+        recentChanges: const [],
+      );
+      await store.saveDeviceSnapshots([snapshot]);
+      await store.renameCurrentDevice('PC del taller');
+      await database.close();
+
+      database = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: databasePath,
+      );
+      store = SqliteSyncStore(
+        database: database,
+        photoDirectory: photos,
+        logoDirectory: logos,
+      );
+      addTearDown(database.close);
+
+      expect(await database.database.getVersion(), 8);
+      expect(DatabaseMigrations.currentVersion, 8);
+      expect(await store.deviceId(), stableDeviceId);
+      expect(await store.pendingCount(), 186);
+      expect(
+        (await database.database.query(
+          'products',
+          where: 'id = ?',
+          whereArgs: const ['retained-v8'],
+        )).single['name'],
+        'Producto conservado',
+      );
+      expect((await store.load()).email, 'manoschacabuco@gmail.com');
+      final restoredDevices = await store.loadDeviceSnapshots();
+      expect(restoredDevices, hasLength(1));
+      expect(restoredDevices.single.deviceId, stableDeviceId);
+      expect(restoredDevices.single.isCurrent, isTrue);
+      expect(restoredDevices.single.name, 'PC del taller');
+      expect(restoredDevices.single.summary.products, 1);
     },
   );
 }

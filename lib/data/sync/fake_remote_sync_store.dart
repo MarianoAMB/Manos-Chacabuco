@@ -3,9 +3,11 @@ import 'dart:typed_data';
 import '../../core/sync/sync_contracts.dart';
 import '../../domain/sync/sync_models.dart';
 
-final class FakeRemoteSyncStore implements RemoteSyncStore {
+final class FakeRemoteSyncStore
+    implements RemoteSyncStore, DeviceSyncRemoteStore {
   final Map<String, SyncEnvelope> _changes = {};
   final Map<String, Uint8List> _assets = {};
+  final Map<String, SyncDeviceSnapshot> _deviceSnapshots = {};
 
   bool failNextRequest = false;
   int downloadedChangeCount = 0;
@@ -14,6 +16,8 @@ final class FakeRemoteSyncStore implements RemoteSyncStore {
   int uploadedAssetCount = 0;
 
   List<SyncEnvelope> get allChanges => List.unmodifiable(_changes.values);
+  List<SyncDeviceSnapshot> get allDeviceSnapshots =>
+      List.unmodifiable(_deviceSnapshots.values);
 
   @override
   Future<List<SyncEnvelope>> pull({required Set<String> knownChangeIds}) async {
@@ -54,6 +58,24 @@ final class FakeRemoteSyncStore implements RemoteSyncStore {
     if (bytes == null) return null;
     downloadedAssetCount++;
     return Uint8List.fromList(bytes);
+  }
+
+  @override
+  Future<void> publishDeviceSnapshot(SyncDeviceSnapshot snapshot) async {
+    _maybeFail();
+    _deviceSnapshots[snapshot.deviceId] = snapshot.copyWith(
+      lastSyncedAt: DateTime.now().toUtc(),
+      isCurrent: false,
+    );
+  }
+
+  @override
+  Future<List<SyncDeviceSnapshot>> fetchDeviceSnapshots() async {
+    _maybeFail();
+    return [
+      for (final snapshot in _deviceSnapshots.values)
+        snapshot.copyWith(isCurrent: false),
+    ];
   }
 
   void _maybeFail() {

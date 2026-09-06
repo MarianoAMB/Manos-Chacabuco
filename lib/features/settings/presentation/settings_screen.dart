@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -888,8 +889,17 @@ final class _SyncCard extends StatelessWidget {
               value: _syncDate(controller.account.lastSyncAt),
             ),
             _SyncDetail(label: 'Estado', value: controller.statusLabel),
+            const SizedBox(height: AppSpacing.sm),
+            const Text(
+              'Los cambios de todos los dispositivos se combinan '
+              'automáticamente. Solo te pediremos elegir si el mismo dato '
+              'se modificó en más de uno.',
+              style: TextStyle(color: AppColors.mutedInk),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _DevicesSection(controller: controller),
             if (controller.conflicts.isNotEmpty) ...[
-              const SizedBox(height: AppSpacing.sm),
+              const SizedBox(height: AppSpacing.md),
               FilledButton.icon(
                 key: const Key('review-sync-conflicts'),
                 onPressed: onReview,
@@ -955,18 +965,392 @@ final class _SyncCard extends StatelessWidget {
 
   static String _syncDate(DateTime? value) {
     if (value == null) return 'Todavía no se sincronizó';
-    final local = value.toLocal();
-    final now = DateTime.now();
-    final sameDay =
-        local.year == now.year &&
-        local.month == now.month &&
-        local.day == now.day;
-    final time =
-        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-    if (sameDay) return 'Hoy $time';
-    return '${local.day.toString().padLeft(2, '0')}/'
-        '${local.month.toString().padLeft(2, '0')}/${local.year} $time';
+    return _exactDateTime(value);
   }
+}
+
+final class _DevicesSection extends StatelessWidget {
+  const _DevicesSection({required this.controller});
+
+  final SyncController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final devices = controller.devices;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Dispositivos sincronizados (${devices.length})',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: AppSpacing.xxs),
+        const Text(
+          'Las cantidades muestran qué tenía cada equipo en su última '
+          'sincronización.',
+          style: TextStyle(color: AppColors.mutedInk),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        if (devices.isEmpty)
+          const Text(
+            'Los dispositivos aparecerán acá después de sincronizar.',
+            style: TextStyle(color: AppColors.mutedInk),
+          )
+        else
+          for (final device in devices) ...[
+            _DeviceCard(
+              device: device,
+              onRename: device.isCurrent && !controller.isBusy
+                  ? () => _renameDevice(context, controller, device)
+                  : null,
+            ),
+            if (device != devices.last) const SizedBox(height: AppSpacing.sm),
+          ],
+      ],
+    );
+  }
+}
+
+final class _DeviceCard extends StatelessWidget {
+  const _DeviceCard({required this.device, this.onRename});
+
+  final SyncDeviceSnapshot device;
+  final VoidCallback? onRename;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(AppSpacing.md),
+    decoration: BoxDecoration(
+      color: AppColors.softSurface,
+      borderRadius: BorderRadius.circular(AppRadii.sm),
+      border: Border.all(
+        color: device.isCurrent ? AppColors.sage : AppColors.outline,
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(_platformIcon(device.platform), color: AppColors.sage),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: AppSpacing.xs,
+                    runSpacing: AppSpacing.xxs,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        device.name,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      if (device.isCurrent)
+                        const _CompactBadge(label: 'Este dispositivo'),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.xxs),
+                  Text(
+                    '${_platformLabel(device.platform)} · Última '
+                    'sincronización: ${_nullableDateTime(device.lastSyncedAt)}',
+                    style: const TextStyle(color: AppColors.mutedInk),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Text(
+          _summaryLabel(device.summary),
+          key: Key('device-summary-${device.deviceId}'),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Wrap(
+          spacing: AppSpacing.xs,
+          runSpacing: AppSpacing.xs,
+          children: [
+            TextButton.icon(
+              key: Key('view-device-changes-${device.deviceId}'),
+              onPressed: () {
+                showDialog<void>(
+                  context: context,
+                  builder: (context) => _DeviceChangesDialog(device: device),
+                );
+              },
+              icon: const Icon(Icons.history_rounded),
+              label: const Text('Ver cambios'),
+            ),
+            if (device.isCurrent)
+              TextButton.icon(
+                key: const Key('rename-current-device'),
+                onPressed: onRename,
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Cambiar nombre'),
+              ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> _renameDevice(
+  BuildContext context,
+  SyncController controller,
+  SyncDeviceSnapshot device,
+) async {
+  final name = await showDialog<String>(
+    context: context,
+    builder: (context) => _RenameDeviceDialog(initialName: device.name),
+  );
+  if (name == null || !context.mounted) return;
+  try {
+    await controller.renameCurrentDevice(name);
+  } catch (error, stackTrace) {
+    debugPrint(
+      'No se pudo cambiar el nombre del dispositivo: $error\n$stackTrace',
+    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('No se pudo cambiar el nombre. Probá de nuevo.'),
+      ),
+    );
+  }
+}
+
+final class _RenameDeviceDialog extends StatefulWidget {
+  const _RenameDeviceDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameDeviceDialog> createState() => _RenameDeviceDialogState();
+}
+
+final class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _name;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.initialName);
+    _name.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _name.text.length,
+    );
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Nombre de este dispositivo'),
+    content: Form(
+      key: _formKey,
+      child: TextFormField(
+        key: const Key('device-name-field'),
+        controller: _name,
+        autofocus: true,
+        maxLength: 50,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(
+          labelText: 'Nombre',
+          helperText: 'Por ejemplo: Celular de Laura o PC del taller',
+        ),
+        validator: (value) => value == null || value.trim().isEmpty
+            ? 'Escribí un nombre para reconocerlo.'
+            : null,
+        onFieldSubmitted: (_) => _save(),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(onPressed: _save, child: const Text('Guardar')),
+    ],
+  );
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    Navigator.pop(context, _name.text.trim());
+  }
+}
+
+final class _DeviceChangesDialog extends StatelessWidget {
+  const _DeviceChangesDialog({required this.device});
+
+  final SyncDeviceSnapshot device;
+
+  @override
+  Widget build(BuildContext context) {
+    final changes = [...device.recentChanges]
+      ..sort((left, right) => right.occurredAt.compareTo(left.occurredAt));
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    return AlertDialog(
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: compact ? AppSpacing.sm : AppSpacing.xl,
+        vertical: AppSpacing.lg,
+      ),
+      title: Row(
+        children: [
+          Icon(_platformIcon(device.platform)),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(child: Text(device.name)),
+        ],
+      ),
+      content: SizedBox(
+        width: 620,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: AppSpacing.xs,
+                  runSpacing: AppSpacing.xs,
+                  children: [
+                    Text(_platformLabel(device.platform)),
+                    if (device.isCurrent)
+                      const _CompactBadge(label: 'Este dispositivo'),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'Última sincronización: '
+                  '${_nullableDateTime(device.lastSyncedAt)}',
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Text(
+                  'Datos disponibles',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                _DataSummaryPanel(summary: device.summary),
+                const SizedBox(height: AppSpacing.lg),
+                Text(
+                  'Cambios recientes (${changes.length})',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                if (changes.isEmpty)
+                  const Text(
+                    'No hay cambios recientes registrados.',
+                    style: TextStyle(color: AppColors.mutedInk),
+                  )
+                else
+                  for (final change in changes)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        change.operation == SyncOperation.delete
+                            ? Icons.delete_outline_rounded
+                            : Icons.edit_outlined,
+                        color: change.operation == SyncOperation.delete
+                            ? AppColors.danger
+                            : AppColors.sage,
+                      ),
+                      title: Text(
+                        change.label ?? _entityTypeLabel(change.entityType),
+                      ),
+                      subtitle: Text(
+                        '${_operationLabel(change.operation)} · '
+                        '${_exactDateTime(change.occurredAt)}',
+                      ),
+                    ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cerrar'),
+        ),
+      ],
+    );
+  }
+}
+
+final class _DataSummaryPanel extends StatelessWidget {
+  const _DataSummaryPanel({required this.summary});
+
+  final SyncDataSummary summary;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(AppSpacing.md),
+    decoration: BoxDecoration(
+      color: AppColors.sageSoft,
+      borderRadius: BorderRadius.circular(AppRadii.sm),
+    ),
+    child: Wrap(
+      spacing: AppSpacing.lg,
+      runSpacing: AppSpacing.sm,
+      children: [
+        _SummaryCount(value: summary.products, label: 'productos'),
+        _SummaryCount(value: summary.materials, label: 'materias primas'),
+        _SummaryCount(value: summary.quotes, label: 'presupuestos'),
+      ],
+    ),
+  );
+}
+
+final class _SummaryCount extends StatelessWidget {
+  const _SummaryCount({required this.value, required this.label});
+
+  final int value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: '$value $label',
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$value', style: Theme.of(context).textTheme.titleLarge),
+        Text(label, style: const TextStyle(color: AppColors.mutedInk)),
+      ],
+    ),
+  );
+}
+
+final class _CompactBadge extends StatelessWidget {
+  const _CompactBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(
+      horizontal: AppSpacing.xs,
+      vertical: AppSpacing.xxs,
+    ),
+    decoration: BoxDecoration(
+      color: AppColors.sageSoft,
+      borderRadius: BorderRadius.circular(AppRadii.pill),
+    ),
+    child: Text(
+      label,
+      style: Theme.of(context).textTheme.labelSmall
+          ?.copyWith(color: AppColors.success, fontWeight: FontWeight.w800),
+    ),
+  );
 }
 
 final class _SyncStatusLine extends StatelessWidget {
@@ -1017,126 +1401,626 @@ final class _SyncDetail extends StatelessWidget {
   );
 }
 
-final class _ConflictReviewDialog extends StatelessWidget {
+final class _ConflictReviewDialog extends StatefulWidget {
   const _ConflictReviewDialog({required this.controller});
 
   final SyncController controller;
 
   @override
+  State<_ConflictReviewDialog> createState() => _ConflictReviewDialogState();
+}
+
+final class _ConflictReviewDialogState extends State<_ConflictReviewDialog> {
+  String? _selectedChoice;
+  bool _resolving = false;
+
+  @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: controller,
+    animation: widget.controller,
     builder: (context, _) {
-      if (controller.conflicts.isEmpty) {
+      if (widget.controller.conflicts.isEmpty) {
         return const AlertDialog(
           title: Text('Cambios revisados'),
           content: Text('Ya no quedan cambios pendientes de revisión.'),
         );
       }
-      final conflict = controller.conflicts.first;
+      final conflict = widget.controller.conflicts.first;
+      final choices = _choices(conflict);
+      final validSelection = choices.any(
+        (choice) => choice.key == _selectedChoice,
+      );
+      final compact = MediaQuery.sizeOf(context).width < 600;
       return AlertDialog(
-        title: Text('Cambios en ${conflict.entityLabel}'),
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: compact ? AppSpacing.sm : AppSpacing.xl,
+          vertical: AppSpacing.lg,
+        ),
+        title: Text('Elegí qué versión conservar'),
         content: SizedBox(
-          width: 620,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  '${conflict.title} fue modificado en los dos dispositivos. '
-                  'Elegí cuál querés conservar.',
-                ),
-                const SizedBox(height: AppSpacing.md),
-                _VersionPanel(
-                  title: 'Versión de este dispositivo',
-                  payload: conflict.localPayload,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                _VersionPanel(
-                  title: 'Versión del otro dispositivo',
-                  payload: conflict.remoteEnvelope.payload,
-                ),
-              ],
+          width: 680,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.64,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '${conflict.title} tiene ${choices.length} versiones para '
+                    'comparar. Revisá el dispositivo y la fecha antes de '
+                    'elegir.',
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  RadioGroup<String>(
+                    groupValue: validSelection ? _selectedChoice : null,
+                    onChanged: (value) {
+                      if (value == null || _resolving) return;
+                      setState(() => _selectedChoice = value);
+                    },
+                    child: Column(
+                      children: [
+                        for (final choice in choices) ...[
+                          _ConflictVersionCard(
+                            choice: choice,
+                            selected: choice.key == _selectedChoice,
+                            enabled: !_resolving,
+                            onSelected: () {
+                              setState(() => _selectedChoice = choice.key);
+                            },
+                          ),
+                          if (choice != choices.last)
+                            const SizedBox(height: AppSpacing.sm),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Revisar después'),
-          ),
-          OutlinedButton(
-            onPressed: () async {
-              await controller.resolveConflict(
-                conflict,
-                SyncConflictResolution.useRemote,
-              );
-              if (context.mounted && controller.conflicts.isEmpty) {
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Usar la otra versión'),
+            onPressed: _resolving ? null : () => Navigator.pop(context),
+            child: const Text('Decidir después'),
           ),
           FilledButton(
-            onPressed: () async {
-              await controller.resolveConflict(
-                conflict,
-                SyncConflictResolution.useLocal,
-              );
-              if (context.mounted && controller.conflicts.isEmpty) {
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Usar esta versión'),
+            key: const Key('keep-selected-sync-version'),
+            onPressed: !validSelection || _resolving
+                ? null
+                : () => _resolve(conflict, choices),
+            child: Text(
+              _resolving ? 'Guardando…' : 'Conservar versión seleccionada',
+            ),
           ),
         ],
       );
     },
   );
+
+  List<_ConflictChoice> _choices(SyncConflict conflict) {
+    final current = widget.controller.devices
+        .where((device) => device.isCurrent)
+        .firstOrNull;
+    final result = <_ConflictChoice>[
+      _ConflictChoice(
+        key: 'local:${conflict.id}',
+        isLocal: true,
+        entityType: conflict.entityType,
+        name: current?.name ?? 'Este dispositivo',
+        platform: current?.platform ?? Platform.operatingSystem,
+        occurredAt:
+            conflict.localOccurredAt ??
+            _payloadUpdatedAt(conflict.localPayload) ??
+            conflict.createdAt,
+        payload: conflict.localPayload,
+        isCurrent: true,
+      ),
+    ];
+    for (final envelope in conflict.remoteEnvelopes) {
+      final snapshot = widget.controller.deviceById(envelope.deviceId);
+      final platform =
+          envelope.devicePlatform ?? snapshot?.platform ?? 'unknown';
+      result.add(
+        _ConflictChoice(
+          key: 'remote:${envelope.revision}',
+          isLocal: false,
+          entityType: conflict.entityType,
+          remoteRevision: envelope.revision,
+          name:
+              envelope.deviceName ??
+              snapshot?.name ??
+              _fallbackDeviceName(platform, envelope.deviceId),
+          platform: platform,
+          occurredAt: envelope.occurredAt,
+          payload: envelope.payload,
+          isCurrent: snapshot?.isCurrent ?? false,
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<void> _resolve(
+    SyncConflict conflict,
+    List<_ConflictChoice> choices,
+  ) async {
+    final selected = choices
+        .where((choice) => choice.key == _selectedChoice)
+        .firstOrNull;
+    if (selected == null) return;
+    setState(() => _resolving = true);
+    try {
+      await widget.controller.resolveConflict(
+        conflict,
+        selected.isLocal
+            ? SyncConflictResolution.useLocal
+            : SyncConflictResolution.useRemote,
+        remoteRevision: selected.remoteRevision,
+      );
+      if (!mounted) return;
+      if (widget.controller.conflicts.isEmpty) {
+        Navigator.pop(context);
+        return;
+      }
+      setState(() {
+        _selectedChoice = null;
+        _resolving = false;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('No se pudo resolver el conflicto: $error\n$stackTrace');
+      if (!mounted) return;
+      if (widget.controller.conflicts.isEmpty) {
+        Navigator.pop(context);
+        return;
+      }
+      setState(() => _resolving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo guardar la elección. Probá de nuevo.'),
+        ),
+      );
+    }
+  }
 }
 
-final class _VersionPanel extends StatelessWidget {
-  const _VersionPanel({required this.title, required this.payload});
+final class _ConflictChoice {
+  const _ConflictChoice({
+    required this.key,
+    required this.isLocal,
+    required this.entityType,
+    required this.name,
+    required this.platform,
+    required this.occurredAt,
+    required this.payload,
+    required this.isCurrent,
+    this.remoteRevision,
+  });
 
-  final String title;
+  final String key;
+  final bool isLocal;
+  final String entityType;
+  final String? remoteRevision;
+  final String name;
+  final String platform;
+  final DateTime occurredAt;
   final Map<String, Object?> payload;
+  final bool isCurrent;
+}
+
+final class _ConflictVersionCard extends StatelessWidget {
+  const _ConflictVersionCard({
+    required this.choice,
+    required this.selected,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final _ConflictChoice choice;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onSelected;
 
   @override
   Widget build(BuildContext context) {
-    final root = payload['root'];
-    final values = root is Map ? root : const <Object?, Object?>{};
-    final lines = <String>[
-      if (values['name'] is String) 'Nombre: ${values['name']}',
-      if (values['customer_name'] is String)
-        'Cliente: ${values['customer_name']}',
-      if (values['business_name'] is String)
-        'Negocio: ${values['business_name']}',
-      if (values['purchase_price_minor'] is int)
-        'Precio de compra: ${ArgentineNumberFormatter.moneyAmount(Money(minorUnits: values['purchase_price_minor']! as int, currency: (values['currency'] as String?) ?? 'ARS'))}',
-      if (values['total_minor'] is int)
-        'Total: ${ArgentineNumberFormatter.moneyAmount(Money(minorUnits: values['total_minor']! as int, currency: (values['currency'] as String?) ?? 'ARS'))}',
-      if (values['price_multiplier_scaled'] is int)
-        'Multiplicador: ${ArgentineNumberFormatter.decimal(DecimalValue.scaled(values['price_multiplier_scaled']! as int), fractionDigits: 3)}',
-      if (values['deleted_at'] != null) 'Estado: eliminado',
-    ];
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: AppColors.softSurface,
-        borderRadius: BorderRadius.circular(AppRadii.sm),
-        border: Border.all(color: AppColors.outline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: AppSpacing.xs),
-          for (final line in lines.take(4)) Text(line),
-          if (lines.isEmpty) const Text('Cambio de configuración interna'),
-        ],
+    final lines = _versionLines(choice.entityType, choice.payload);
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: 'Versión de ${choice.name}',
+      child: Material(
+        color: selected ? AppColors.terracottaSoft : AppColors.softSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadii.sm),
+          side: BorderSide(
+            color: selected ? AppColors.terracotta : AppColors.outline,
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: InkWell(
+          onTap: enabled ? onSelected : null,
+          borderRadius: BorderRadius.circular(AppRadii.sm),
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Radio<String>(value: choice.key, enabled: enabled),
+                const SizedBox(width: AppSpacing.xs),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: AppSpacing.xs,
+                        runSpacing: AppSpacing.xxs,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Icon(
+                            _platformIcon(choice.platform),
+                            size: 20,
+                            color: AppColors.sage,
+                          ),
+                          Text(
+                            choice.name,
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          if (choice.isCurrent)
+                            const _CompactBadge(label: 'Este dispositivo'),
+                        ],
+                      ),
+                      const SizedBox(height: AppSpacing.xxs),
+                      Text(
+                        '${_platformLabel(choice.platform)} · '
+                        'Modificado: ${_exactDateTime(choice.occurredAt)}',
+                        style: const TextStyle(color: AppColors.mutedInk),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      for (final line in lines) Text(line),
+                      if (lines.isEmpty)
+                        const Text('Esta versión no tiene detalles visibles.'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
 }
+
+List<String> _versionLines(String entityType, Map<String, Object?> payload) {
+  final root = payload['root'];
+  if (root is! Map) return const ['Estado: eliminado'];
+  final values = Map<String, Object?>.from(root);
+  final currency = (values['currency'] as String?) ?? 'ARS';
+  final lines = <String>[];
+
+  void addText(String label, Object? raw) {
+    if (raw case final String value when value.trim().isNotEmpty) {
+      lines.add('$label: ${value.trim()}');
+    }
+  }
+
+  switch (entityType) {
+    case 'appSettings':
+      lines.add('Moneda: $currency');
+      lines.add(
+        'Desperdicio predeterminado: '
+        '${_optionalPercent(values['default_waste_scaled'])}',
+      );
+      lines.add(
+        'Hilo predeterminado: '
+        '${_optionalPercent(values['default_thread_scaled'])}',
+      );
+      lines.add(
+        'Recargo minorista: '
+        '${_optionalPercent(values['default_retail_scaled'])}',
+      );
+      lines.add(
+        'Multiplicador predeterminado: '
+        '${_optionalDecimal(values['default_multiplier_scaled'])}',
+      );
+      lines.add(
+        'Mínimo mayorista: '
+        '${_optionalMoney(values['minimum_wholesale_minor'], currency)}',
+      );
+      lines.add(
+        'Logo: ${_hasText(values['business_logo_path']) ? 'incluido' : 'sin logo'}',
+      );
+    case 'material':
+      addText('Nombre', values['name']);
+      addText('Descripción', values['description']);
+      addText('Marca o proveedor', values['brand_or_supplier']);
+      if (values['purchase_quantity_scaled'] case final int value) {
+        lines.add(
+          'Cantidad de compra: ${_scaledDecimal(value)}'
+          '${_unitSuffix(values['purchase_unit_id'])}',
+        );
+      }
+      if (values['purchase_price_minor'] case final int value) {
+        lines.add(
+          'Precio de compra: '
+          '${ArgentineNumberFormatter.money(Money(minorUnits: value, currency: currency))}',
+        );
+      }
+      lines.add(
+        'Unidad de consumo: ${_unitLabel(values['consumption_unit_id'])}',
+      );
+      if (payload['variants'] case final List<Object?> variants) {
+        lines.add(_payloadListSummary('Variantes', variants));
+      }
+      addText('Notas', values['notes']);
+    case 'product':
+      addText('Nombre', values['name']);
+      addText('Descripción', values['description']);
+      if (values['shape_code'] case final String value when value.isNotEmpty) {
+        lines.add('Forma: ${_shapeLabel(value)}');
+      }
+      if (_dimensionsSummary(values['dimensions_json']) case final summary?) {
+        lines.add('Medidas: $summary');
+      }
+      lines.add(
+        'Desperdicio: ${_optionalPercent(values['waste_override_scaled'], fallback: 'usa el valor general')}',
+      );
+      lines.add(
+        'Hilo: ${_optionalPercent(values['thread_override_scaled'], fallback: 'usa el valor general')}',
+      );
+      lines.add(
+        'Recargo minorista: ${_optionalPercent(values['retail_override_scaled'], fallback: 'usa el valor general')}',
+      );
+      lines.add(
+        'Multiplicador: ${_optionalDecimal(values['price_multiplier_scaled'])}',
+      );
+      if (payload['usages'] case final List<Object?> usages) {
+        lines.add('Materias primas utilizadas: ${_activePayloadCount(usages)}');
+      }
+      lines.add(
+        'Foto: ${_hasText(values['photo_path']) ? 'incluida' : 'sin foto'}',
+      );
+      addText('Notas', values['notes']);
+    case 'quote':
+      addText('Cliente', values['customer_name']);
+      lines.add('Fecha: ${_storedDate(values['quote_date'])}');
+      lines.add('Válido hasta: ${_storedDate(values['valid_until'])}');
+      if (values['validity_days'] case final int value) {
+        lines.add('Vigencia: $value días');
+      }
+      lines.add('Tipo de precio: ${_priceTypeLabel(values['price_type'])}');
+      if (values['total_minor'] case final int value) {
+        lines.add(
+          'Total: '
+          '${ArgentineNumberFormatter.money(Money(minorUnits: value, currency: currency))}',
+        );
+      }
+      if (payload['items'] case final List<Object?> items) {
+        lines.add(_payloadListSummary('Productos', items));
+      }
+      if (payload['adjustments'] case final List<Object?> adjustments) {
+        lines.add(_payloadListSummary('Ajustes', adjustments));
+      }
+      addText('Notas', values['notes']);
+    case 'measurementUnit':
+      addText('Nombre', values['name']);
+      addText('Símbolo', values['symbol']);
+      addText('Código', values['code']);
+      addText('Tipo de medida', values['dimension']);
+    case 'priceListPreference':
+      lines.add('Lista: ${_priceTypeLabel(values['price_type'])}');
+      lines.addAll(_priceListPreferenceLines(values['config_json']));
+    default:
+      addText('Nombre', values['name']);
+      addText('Descripción', values['description']);
+      addText('Cliente', values['customer_name']);
+  }
+
+  if (values['deleted_at'] != null) {
+    lines.add('Estado: eliminado');
+  } else if (values['is_active'] case final int value) {
+    lines.add('Estado: ${value == 1 ? 'activo' : 'inactivo'}');
+  }
+  return lines;
+}
+
+String _optionalPercent(Object? raw, {String fallback = 'sin definir'}) =>
+    raw is int
+    ? '${ArgentineNumberFormatter.decimal(DecimalValue.scaled(raw * 100), fractionDigits: 2)}%'
+    : fallback;
+
+String _optionalDecimal(Object? raw, {String fallback = 'sin definir'}) =>
+    raw is int
+    ? ArgentineNumberFormatter.decimal(
+        DecimalValue.scaled(raw),
+        fractionDigits: 3,
+      )
+    : fallback;
+
+String _optionalMoney(Object? raw, String currency) => raw is int
+    ? ArgentineNumberFormatter.money(Money(minorUnits: raw, currency: currency))
+    : 'sin definir';
+
+String _scaledDecimal(int value) => ArgentineNumberFormatter.decimal(
+  DecimalValue.scaled(value),
+  fractionDigits: 3,
+);
+
+bool _hasText(Object? value) => value is String && value.trim().isNotEmpty;
+
+String _unitSuffix(Object? unitId) {
+  final label = _unitLabel(unitId);
+  return label == 'otra unidad' ? '' : ' $label';
+}
+
+String _unitLabel(Object? unitId) => switch (unitId) {
+  'd8a885bb-55c2-4fb3-b430-933781c3f8c0' => 'g',
+  '696f7d11-937d-47cc-9e4c-8e46f5caa706' => 'kg',
+  'e2a6fd75-1f02-41ea-bd51-14e8535ddad5' => 'm',
+  'b59af36e-bb0c-4533-a4a8-48ec2cead406' => 'cm',
+  '35258dd4-0b31-45dd-b06e-1992d96757d9' => 'm²',
+  '44df27a1-a71f-447c-b6ee-02e75b6d6238' => 'cm²',
+  '2bf70ea7-4bb8-4249-b009-f57f55aa1a85' => 'unidades',
+  _ => 'otra unidad',
+};
+
+String _shapeLabel(String value) => switch (value) {
+  'circle' => 'Círculo plano',
+  'cylinder' => 'Cilindro',
+  'oval' => 'Oval',
+  'frustum' => 'Cono / tronco de cono',
+  _ => 'Otra forma',
+};
+
+String? _dimensionsSummary(Object? encoded) {
+  if (encoded is! String || encoded.isEmpty) return null;
+  try {
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map) return null;
+    final parts = <String>[];
+    for (final entry in decoded.entries) {
+      if (entry.value is! Map) continue;
+      final value = entry.value as Map;
+      final amount = value['amount'];
+      if (amount is! int) continue;
+      parts.add(
+        '${_dimensionLabel(entry.key.toString())}: ${_scaledDecimal(amount)}'
+        '${_unitSuffix(value['unit'])}',
+      );
+    }
+    return parts.isEmpty ? null : parts.join(' · ');
+  } on FormatException {
+    return 'configuradas';
+  }
+}
+
+String _dimensionLabel(String code) => switch (code) {
+  'diameter' => 'Diámetro',
+  'height' => 'Alto',
+  'length' => 'Largo',
+  'width' => 'Ancho',
+  'bottomDiameter' => 'Diámetro inferior',
+  'topDiameter' => 'Diámetro superior',
+  'lidBottomDiameter' => 'Diámetro inferior de tapa',
+  'lidTopDiameter' => 'Diámetro superior de tapa',
+  'lidHeight' => 'Altura de tapa',
+  _ => code,
+};
+
+String _storedDate(Object? raw) {
+  if (raw is! String || raw.length < 10) return 'sin definir';
+  final date = raw.substring(0, 10).split('-');
+  return date.length == 3 ? '${date[2]}/${date[1]}/${date[0]}' : raw;
+}
+
+String _priceTypeLabel(Object? value) => switch (value) {
+  'retail' => 'Minorista',
+  'wholesale' => 'Mayorista',
+  _ => 'Sin definir',
+};
+
+String _payloadListSummary(String label, List<Object?> values) {
+  final active = values
+      .where((item) {
+        return item is Map && item['deleted_at'] == null;
+      })
+      .toList(growable: false);
+  final names = <String>[
+    for (final item in active)
+      if (item case final Map value)
+        if ((value['name'] ?? value['description']) case final String name
+            when name.trim().isNotEmpty)
+          name.trim(),
+  ];
+  if (names.isEmpty) return '$label: ${active.length}';
+  final visible = names.take(3).join(', ');
+  final remaining = names.length - 3;
+  return '$label (${active.length}): $visible'
+      '${remaining > 0 ? ' y $remaining más' : ''}';
+}
+
+List<String> _priceListPreferenceLines(Object? encoded) {
+  if (encoded is! String || encoded.isEmpty) return const [];
+  try {
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map) return const [];
+    final products = decoded['selectedProductIds'];
+    return [
+      'Productos seleccionados: ${products is List ? products.length : 0}',
+      'Fotos: ${decoded['showPhotos'] == false ? 'no' : 'sí'}',
+      'Agrupar por categoría: '
+          '${decoded['groupByCategory'] == false ? 'no' : 'sí'}',
+      if (decoded['footerNote'] case final String value
+          when value.trim().isNotEmpty)
+        'Nota al pie: ${value.trim()}',
+    ];
+  } on FormatException {
+    return const ['Preferencias guardadas'];
+  }
+}
+
+int _activePayloadCount(List<Object?> values) => values.where((item) {
+  if (item is! Map) return false;
+  return item['deleted_at'] == null;
+}).length;
+
+DateTime? _payloadUpdatedAt(Map<String, Object?> payload) {
+  final root = payload['root'];
+  if (root is! Map || root['updated_at'] is! String) return null;
+  return DateTime.tryParse(root['updated_at']! as String);
+}
+
+String _summaryLabel(SyncDataSummary summary) =>
+    '${summary.products} productos · ${summary.materials} materias primas · '
+    '${summary.quotes} presupuestos';
+
+String _nullableDateTime(DateTime? value) =>
+    value == null ? 'Todavía no se sincronizó' : _exactDateTime(value);
+
+String _exactDateTime(DateTime value) {
+  final local = value.toLocal();
+  final day = local.day.toString().padLeft(2, '0');
+  final month = local.month.toString().padLeft(2, '0');
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$day/$month/${local.year} · $hour:$minute';
+}
+
+String _platformLabel(String platform) => switch (platform.toLowerCase()) {
+  'windows' => 'Windows',
+  'android' => 'Android',
+  _ => 'Dispositivo',
+};
+
+IconData _platformIcon(String platform) => switch (platform.toLowerCase()) {
+  'windows' => Icons.computer_rounded,
+  'android' => Icons.smartphone_rounded,
+  _ => Icons.devices_other_rounded,
+};
+
+String _fallbackDeviceName(String platform, String deviceId) {
+  final suffix = deviceId.length <= 4
+      ? deviceId.toUpperCase()
+      : deviceId.substring(deviceId.length - 4).toUpperCase();
+  return '${_platformLabel(platform)} · $suffix';
+}
+
+String _entityTypeLabel(String type) => switch (type) {
+  'product' => 'Producto',
+  'material' => 'Materia prima',
+  'quote' => 'Presupuesto',
+  'appSettings' => 'Configuración',
+  'productCategory' => 'Categoría de producto',
+  'materialCategory' => 'Categoría de materia prima',
+  'priceListPreference' => 'Lista de precios',
+  _ => 'Dato de la aplicación',
+};
+
+String _operationLabel(SyncOperation operation) => switch (operation) {
+  SyncOperation.upsert => 'Guardado',
+  SyncOperation.delete => 'Eliminado',
+};
 
 final class _BusinessLogoField extends StatelessWidget {
   const _BusinessLogoField({

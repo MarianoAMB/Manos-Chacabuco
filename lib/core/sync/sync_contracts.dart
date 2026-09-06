@@ -14,6 +14,12 @@ abstract interface class RemoteSyncStore {
   Future<Uint8List?> downloadAsset(SyncAssetReference asset);
 }
 
+abstract interface class DeviceSyncRemoteStore {
+  Future<void> publishDeviceSnapshot(SyncDeviceSnapshot snapshot);
+
+  Future<List<SyncDeviceSnapshot>> fetchDeviceSnapshots();
+}
+
 enum RemoteIntegrationResult { applied, ignored, conflict }
 
 abstract interface class LocalSyncStore {
@@ -39,10 +45,23 @@ abstract interface class LocalSyncStore {
 
   Future<void> resolveConflict(
     String conflictId,
-    SyncConflictResolution resolution,
-  );
+    SyncConflictResolution resolution, {
+    String? remoteRevision,
+  });
 
   Future<void> prepareFullUploadForNewAccount();
+}
+
+abstract interface class DeviceSyncLocalStore {
+  Future<SyncDeviceSnapshot> buildCurrentDeviceSnapshot({
+    required List<SyncDeviceChange> recentChanges,
+  });
+
+  Future<List<SyncDeviceSnapshot>> loadDeviceSnapshots();
+
+  Future<void> saveDeviceSnapshots(List<SyncDeviceSnapshot> snapshots);
+
+  Future<void> renameCurrentDevice(String name);
 }
 
 abstract interface class SyncAccountStore {

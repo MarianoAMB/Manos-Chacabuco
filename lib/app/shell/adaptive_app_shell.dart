@@ -202,40 +202,46 @@ final class _AdaptiveAppShellState extends State<AdaptiveAppShell> {
     final destination = await showModalBottomSheet<AppDestination>(
       context: context,
       useSafeArea: true,
-      builder: (context) => Padding(
-        padding: const EdgeInsets.fromLTRB(
-          AppSpacing.md,
-          AppSpacing.xs,
-          AppSpacing.md,
-          AppSpacing.lg,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(AppSpacing.sm),
-              child: Text(
-                'Más herramientas',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+      builder: (context) => SafeArea(
+        top: false,
+        minimum: const EdgeInsets.only(bottom: AppSpacing.md),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.md,
+              AppSpacing.xs,
+              AppSpacing.md,
+              AppSpacing.sm,
             ),
-            for (final item in const [
-              AppDestination.calculator,
-              AppDestination.priceLists,
-              AppDestination.settings,
-            ])
-              ListTile(
-                leading: Icon(item.icon),
-                title: Text(item.label),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                selected: _selected == item,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadii.sm),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(AppSpacing.sm),
+                  child: Text(
+                    'Más herramientas',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
                 ),
-                onTap: () => Navigator.pop(context, item),
-              ),
-          ],
+                for (final item in const [
+                  AppDestination.calculator,
+                  AppDestination.priceLists,
+                  AppDestination.settings,
+                ])
+                  ListTile(
+                    leading: Icon(item.icon),
+                    title: Text(item.label),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    selected: _selected == item,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.sm),
+                    ),
+                    onTap: () => Navigator.pop(context, item),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );

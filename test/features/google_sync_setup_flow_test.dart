@@ -119,8 +119,9 @@ final class _EmptySyncStore implements LocalSyncStore, SyncAccountStore {
   @override
   Future<void> resolveConflict(
     String conflictId,
-    SyncConflictResolution resolution,
-  ) async {}
+    SyncConflictResolution resolution, {
+    String? remoteRevision,
+  }) async {}
 
   @override
   Future<SyncAccountState> load() async => account;
