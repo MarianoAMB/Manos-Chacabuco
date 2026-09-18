@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import '../../../core/sync/sync_contracts.dart';
 import '../../../core/sync/sync_engine.dart';
 import '../../../domain/sync/sync_models.dart';
+import 'sync_diagnostic.dart';
 
 final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   SyncController({
@@ -41,6 +42,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   bool _initialized = false;
   bool _online = true;
   int _consecutiveFailures = 0;
+  String? _lastFailureDetails;
 
   SyncAccountState get account => _account;
   SyncConnectionStatus get status => _status;
@@ -51,6 +53,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
   bool get canConfigure => _authenticator is ConfigurableSyncAuthenticator;
   String? get configurationMessage => _authenticator.configurationMessage;
   bool get isBusy => _status == SyncConnectionStatus.syncing;
+  String? get lastFailureDetails => _lastFailureDetails;
 
   String get statusLabel => switch (_status) {
     SyncConnectionStatus.notConfigured => 'Falta configurar Google',
@@ -105,6 +108,10 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (error, stackTrace) {
       debugPrint('No se pudo restaurar Google Drive: $error\n$stackTrace');
+      _lastFailureDetails = SyncDiagnostic.describe(
+        'Restaurando la conexión de Google',
+        error,
+      );
       _status = SyncConnectionStatus.error;
       _account = _account.copyWith(lastError: _friendlyError(error));
       await _accountStore.save(_account);
@@ -114,6 +121,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> connect() async {
     if (!_authenticator.isConfigured || isBusy) return;
+    _lastFailureDetails = null;
     _status = SyncConnectionStatus.syncing;
     notifyListeners();
     try {
@@ -136,6 +144,10 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
       await syncNow(force: true);
     } catch (error, stackTrace) {
       debugPrint('No se pudo conectar Google Drive: $error\n$stackTrace');
+      _lastFailureDetails = SyncDiagnostic.describe(
+        'Conectando la cuenta de Google',
+        error,
+      );
       _account = _account.copyWith(lastError: _friendlyError(error));
       await _accountStore.save(_account);
       _status = SyncConnectionStatus.error;
@@ -152,6 +164,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
     await authenticator.configure(setupInput);
     await _session?.close();
     _session = null;
+    _lastFailureDetails = null;
     _account = _account.copyWith(connected: false, clearError: true);
     await _accountStore.save(_account);
     _status = SyncConnectionStatus.disconnected;
@@ -165,6 +178,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       await _session?.close();
       _session = null;
+      _lastFailureDetails = null;
       _account = _account.copyWith(connected: false, clearError: true);
       await _accountStore.save(_account);
       await _refreshLocalState();
@@ -186,13 +200,17 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
     _retryTimer?.cancel();
     _retryTimer = null;
     notifyListeners();
+    var stage = 'Preparando la sincronización';
     try {
       final result = await SyncEngine(
         local: _localStore,
         remote: session.remoteStore,
+        onStage: (current) => stage = current,
       ).synchronize();
+      stage = 'Actualizando los datos locales';
       await _refreshLocalState();
       if (result.downloaded > 0 && _onDataApplied != null) {
+        stage = 'Mostrando los datos recibidos';
         await _onDataApplied();
       }
       _account = _account.copyWith(
@@ -201,7 +219,9 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
         lastSyncAt: DateTime.now().toUtc(),
         clearError: true,
       );
+      stage = 'Guardando el estado de sincronización';
       await _accountStore.save(_account);
+      _lastFailureDetails = null;
       _consecutiveFailures = 0;
       _status = _conflicts.isNotEmpty
           ? SyncConnectionStatus.conflict
@@ -210,7 +230,15 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
           : SyncConnectionStatus.synchronized;
     } catch (error, stackTrace) {
       debugPrint('Error sincronizando Google Drive: $error\n$stackTrace');
-      await _refreshLocalState();
+      _lastFailureDetails = SyncDiagnostic.describe(stage, error);
+      try {
+        await _refreshLocalState();
+      } on Object catch (refreshError, refreshStackTrace) {
+        debugPrint(
+          'No se pudo actualizar el estado local: '
+          '$refreshError\n$refreshStackTrace',
+        );
+      }
       _account = _account.copyWith(lastError: _friendlyError(error));
       await _accountStore.save(_account);
       _status = _online
@@ -242,7 +270,9 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> refreshPending() async {
     await _refreshLocalState();
-    if (_account.connected && !isBusy) {
+    if (_account.connected &&
+        !isBusy &&
+        _status != SyncConnectionStatus.error) {
       _status = _conflicts.isNotEmpty
           ? SyncConnectionStatus.conflict
           : _pendingCount > 0
@@ -368,7 +398,7 @@ final class SyncController extends ChangeNotifier with WidgetsBindingObserver {
     if (text.contains('network') || text.contains('socket')) {
       return 'No hay conexión. Tus cambios quedaron guardados para después.';
     }
-    return 'Google Drive no está disponible ahora. Tus datos locales están seguros.';
+    return 'No se pudo completar la sincronización. Tus datos locales están seguros.';
   }
 
   @override

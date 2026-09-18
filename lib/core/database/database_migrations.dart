@@ -1,7 +1,7 @@
 import 'package:sqflite/sqflite.dart' show Database;
 
 abstract final class DatabaseMigrations {
-  static const currentVersion = 8;
+  static const currentVersion = 9;
 
   static Future<void> migrate(
     Database database,
@@ -31,6 +31,9 @@ abstract final class DatabaseMigrations {
     }
     if (fromVersion < 8 && toVersion >= 8) {
       await _upgradeToVersion8(database);
+    }
+    if (fromVersion < 9 && toVersion >= 9) {
+      await _upgradeToVersion9(database);
     }
   }
 
@@ -635,6 +638,65 @@ abstract final class DatabaseMigrations {
     await batch.commit(noResult: true);
 
     await _createSyncTriggers(database);
+  }
+
+  static Future<void> _upgradeToVersion9(Database database) async {
+    // Category names can also be created independently with different IDs.
+    // Keep every category and its foreign-key references when merging devices;
+    // local creation still checks for duplicate names in the repositories.
+    await database.execute('DROP INDEX idx_material_categories_unique_name');
+    await database.execute('DROP INDEX idx_product_categories_unique_name');
+    await database.execute('''
+      CREATE INDEX idx_material_categories_name
+      ON material_categories(name COLLATE NOCASE)
+      WHERE deleted_at IS NULL
+    ''');
+    await database.execute('''
+      CREATE INDEX idx_product_categories_name
+      ON product_categories(name COLLATE NOCASE)
+      WHERE deleted_at IS NULL
+    ''');
+
+    // The same spreadsheet row may have been imported independently on two
+    // devices. Its source key identifies the source, not a globally unique
+    // import record. Keep both IDs and their target links during sync.
+    await database.execute('''
+      CREATE TABLE import_records_v9 (
+        id TEXT PRIMARY KEY,
+        source_key TEXT NOT NULL,
+        spreadsheet_id TEXT NOT NULL,
+        sheet_name TEXT NOT NULL,
+        source_row INTEGER NOT NULL,
+        section TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        imported_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      )
+    ''');
+    await database.execute('''
+      INSERT INTO import_records_v9
+        (id, source_key, spreadsheet_id, sheet_name, source_row, section,
+         record_type, target_id, original_name, imported_at, last_seen_at)
+      SELECT id, source_key, spreadsheet_id, sheet_name, source_row, section,
+             record_type, target_id, original_name, imported_at, last_seen_at
+      FROM import_records
+    ''');
+    await database.execute('DROP TABLE import_records');
+    await database.execute(
+      'ALTER TABLE import_records_v9 RENAME TO import_records',
+    );
+    await database.execute(
+      'CREATE INDEX idx_import_records_source ON import_records(spreadsheet_id, sheet_name, record_type)',
+    );
+    await database.execute(
+      'CREATE INDEX idx_import_records_source_key ON import_records(source_key)',
+    );
+    await _createTriggersFor(
+      database,
+      const _SyncTriggerDefinition('import_records', 'importRecord', 'id'),
+    );
   }
 
   static Future<void> _createSyncTriggers(Database database) async {

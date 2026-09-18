@@ -33,11 +33,18 @@ final class GoogleDriveRemoteSyncStore
       );
       if (knownChangeIds.contains(changeId)) continue;
       final bytes = await _download(id);
-      result.add(
-        SyncEnvelope.fromJson(
-          Map<String, Object?>.from(jsonDecode(utf8.decode(bytes)) as Map),
-        ),
-      );
+      try {
+        result.add(
+          SyncEnvelope.fromJson(
+            Map<String, Object?>.from(jsonDecode(utf8.decode(bytes)) as Map),
+          ),
+        );
+      } on Object catch (error, stackTrace) {
+        Error.throwWithStackTrace(
+          SyncFileFormatException(name, error),
+          stackTrace,
+        );
+      }
     }
     return result;
   }

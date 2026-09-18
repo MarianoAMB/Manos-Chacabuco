@@ -4,12 +4,17 @@ import '../../domain/sync/sync_models.dart';
 import 'sync_contracts.dart';
 
 final class SyncEngine {
-  SyncEngine({required LocalSyncStore local, required RemoteSyncStore remote})
-    : _local = local,
-      _remote = remote;
+  SyncEngine({
+    required LocalSyncStore local,
+    required RemoteSyncStore remote,
+    void Function(String stage)? onStage,
+  }) : _local = local,
+       _remote = remote,
+       _onStage = onStage;
 
   final LocalSyncStore _local;
   final RemoteSyncStore _remote;
+  final void Function(String stage)? _onStage;
   bool _running = false;
 
   Future<SyncRunResult> synchronize() async {
@@ -20,9 +25,12 @@ final class SyncEngine {
     try {
       var downloaded = 0;
       var conflictCount = 0;
+      _onStage?.call('Preparando los datos locales');
       final known = await _local.processedChangeIds();
+      _onStage?.call('Leyendo los archivos de Google Drive');
       final remoteChanges = await _remote.pull(knownChangeIds: known);
       for (final envelope in _ordered(remoteChanges)) {
+        _onStage?.call('Procesando ${_entityLabel(envelope.entityType)}');
         final result = await _local.integrateRemote(
           envelope,
           downloadAsset: _remote.downloadAsset,
@@ -39,6 +47,7 @@ final class SyncEngine {
       final remoteDevices = _remote is DeviceSyncRemoteStore
           ? _remote as DeviceSyncRemoteStore
           : null;
+      _onStage?.call('Preparando los cambios de este dispositivo');
       final sendingDevice = localDevices == null || remoteDevices == null
           ? null
           : await localDevices.buildCurrentDeviceSnapshot(
@@ -58,6 +67,7 @@ final class SyncEngine {
                   outboxIds: change.outboxIds,
                 );
           for (final asset in envelope.assets) {
+            _onStage?.call('Subiendo una foto o un logo');
             if (!await _remote.hasAsset(asset.hash)) {
               final bytes = await _local.readAsset(asset);
               if (bytes == null) {
@@ -68,6 +78,7 @@ final class SyncEngine {
               await _remote.uploadAsset(asset, bytes);
             }
           }
+          _onStage?.call('Subiendo un cambio a Google Drive');
           await _remote.push(envelope);
           await _local.markPushed(effectiveChange);
           uploadedEnvelopes.add(envelope);
@@ -76,6 +87,7 @@ final class SyncEngine {
       }
 
       if (localDevices != null && remoteDevices != null) {
+        _onStage?.call('Actualizando la lista de dispositivos');
         final recentChanges = [
           for (final envelope in uploadedEnvelopes)
             SyncDeviceChange.fromEnvelope(envelope),
@@ -154,5 +166,19 @@ final class SyncEngine {
     'product' => 3,
     'quote' => 4,
     _ => 5,
+  };
+
+  String _entityLabel(String type) => switch (type) {
+    'appSettings' => 'la configuración',
+    'measurementUnit' => 'una unidad de medida',
+    'materialCategory' => 'una categoría de materia prima',
+    'material' => 'una materia prima',
+    'productCategory' => 'una categoría de producto',
+    'product' => 'un producto o su foto',
+    'quote' => 'un presupuesto',
+    'priceListPreference' => 'una preferencia de lista de precios',
+    'importRecord' => 'un registro de importación',
+    'importReport' => 'un informe de importación',
+    _ => 'datos de la app',
   };
 }

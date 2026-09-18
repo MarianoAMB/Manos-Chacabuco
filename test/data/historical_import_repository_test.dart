@@ -251,6 +251,50 @@ void main() {
       );
     }
   });
+
+  test(
+    'no elige un destino arbitrario si dos equipos importaron la misma fila',
+    () async {
+      final fixture = await _databaseFixture('ambiguous-source');
+      final database = fixture.database;
+      final repository = SqliteHistoricalImportRepository(database);
+      final now = DateTime.utc(2026, 9, 18).toIso8601String();
+      final first = {
+        'id': 'link-pc',
+        'source_key': 'sheet-id|Productos|Catálogo|product|2',
+        'spreadsheet_id': 'sheet-id',
+        'sheet_name': 'Productos',
+        'source_row': 2,
+        'section': 'Catálogo',
+        'record_type': 'product',
+        'target_id': 'product-pc',
+        'original_name': 'Cesto',
+        'imported_at': now,
+        'last_seen_at': now,
+      };
+      await database.database.insert('import_records', first);
+      await database.database.insert('import_records', {
+        ...first,
+        'id': 'link-phone',
+      });
+      expect(
+        (await repository.findSourceLinks('sheet-id')).values.single.targetId,
+        'product-pc',
+      );
+
+      await database.database.update(
+        'import_records',
+        {'target_id': 'product-phone'},
+        where: 'id = ?',
+        whereArgs: ['link-phone'],
+      );
+      await expectLater(
+        repository.findSourceLinks('sheet-id'),
+        throwsA(isA<AmbiguousImportSourceException>()),
+      );
+      expect(await database.database.query('import_records'), hasLength(2));
+    },
+  );
 }
 
 Future<({AppDatabase database, Directory directory})> _databaseFixture(

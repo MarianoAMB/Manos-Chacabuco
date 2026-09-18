@@ -66,6 +66,12 @@ final class ImportSourceLink {
   final String targetId;
 }
 
+/// Two devices imported one spreadsheet row into different local targets.
+/// Both targets remain intact, but a later import must not choose one at random.
+final class AmbiguousImportSourceException implements Exception {
+  const AmbiguousImportSourceException();
+}
+
 final class ImportIssue {
   const ImportIssue({
     required this.kind,

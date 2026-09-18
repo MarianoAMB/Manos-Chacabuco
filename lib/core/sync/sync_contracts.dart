@@ -14,6 +14,17 @@ abstract interface class RemoteSyncStore {
   Future<Uint8List?> downloadAsset(SyncAssetReference asset);
 }
 
+/// Identifica un cambio remoto que no se puede interpretar sin exponer su contenido.
+final class SyncFileFormatException implements Exception {
+  const SyncFileFormatException(this.fileName, this.cause);
+
+  final String fileName;
+  final Object cause;
+
+  @override
+  String toString() => 'Archivo de sincronización inválido: $fileName ($cause)';
+}
+
 abstract interface class DeviceSyncRemoteStore {
   Future<void> publishDeviceSnapshot(SyncDeviceSnapshot snapshot);
 

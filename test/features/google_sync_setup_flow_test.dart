@@ -6,6 +6,8 @@ import 'package:manos_chacabuco/core/sync/sync_contracts.dart';
 import 'package:manos_chacabuco/domain/sync/sync_models.dart';
 import 'package:manos_chacabuco/features/settings/presentation/settings_screen.dart';
 import 'package:manos_chacabuco/features/sync/application/sync_controller.dart';
+import 'package:manos_chacabuco/features/sync/application/sync_diagnostic.dart';
+import 'package:googleapis/drive/v3.dart' show DetailedApiRequestError;
 
 import '../support/test_app_harness.dart';
 
@@ -54,6 +56,140 @@ void main() {
     expect(find.text('Elegir archivo JSON'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'primer fallo muestra un detalle seguro y el reintento lo limpia',
+    (tester) async {
+      tester.view.physicalSize = const Size(900, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final harness = (await tester.runAsync(createTestAppHarness))!;
+      addTearDown(harness.close);
+      final store = _EmptySyncStore();
+      final remote = _FirstPullFailingRemoteStore();
+      final controller = SyncController(
+        localStore: store,
+        accountStore: store,
+        authenticator: _ConnectedAuthenticator(remote),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.connect();
+      expect(controller.status, SyncConnectionStatus.error);
+      expect(controller.account.lastSyncAt, isNull);
+      expect(controller.lastFailureDetails, contains('Leyendo los archivos'));
+      expect(controller.lastFailureDetails, isNot(contains('dato privado')));
+      await controller.refreshPending();
+      expect(controller.status, SyncConnectionStatus.error);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SettingsScreen(
+              controller: harness.settingsController,
+              syncController: controller,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final showDetails = find.byKey(const Key('show-sync-failure-details'));
+      await tester.ensureVisible(showDetails);
+      await tester.tap(showDetails);
+      await tester.pumpAndSettle();
+      expect(find.text('Detalle del problema'), findsOneWidget);
+      expect(find.textContaining('FORMATO_DATOS'), findsOneWidget);
+      expect(find.textContaining('dato privado'), findsNothing);
+      await tester.tap(find.text('Cerrar'));
+      await tester.pumpAndSettle();
+
+      remote.fail = false;
+      await controller.syncNow();
+      await tester.pumpAndSettle();
+      expect(controller.status, SyncConnectionStatus.synchronized);
+      expect(controller.account.lastSyncAt, isNotNull);
+      expect(controller.lastFailureDetails, isNull);
+      expect(showDetails, findsNothing);
+    },
+  );
+
+  test('el detalle de Google no expone el cuerpo de la respuesta', () {
+    final result = SyncDiagnostic.describe(
+      'Leyendo los archivos de Google Drive',
+      DetailedApiRequestError(403, 'token privado de ejemplo'),
+    );
+    expect(result, contains('HTTP 403'));
+    expect(result, isNot(contains('token privado')));
+  });
+
+  test('un JSON inválido identifica el archivo sin mostrar su contenido', () {
+    final result = SyncDiagnostic.describe(
+      'Leyendo los archivos de Google Drive',
+      const SyncFileFormatException(
+        'mc-change-archivo123.json',
+        FormatException('contenido privado'),
+      ),
+    );
+    expect(result, contains('mc-change-archivo123.json'));
+    expect(result, isNot(contains('contenido privado')));
+  });
+}
+
+final class _ConnectedAuthenticator implements SyncAuthenticator {
+  const _ConnectedAuthenticator(this.remote);
+
+  final RemoteSyncStore remote;
+
+  @override
+  String? get configurationMessage => null;
+
+  @override
+  bool get isConfigured => true;
+
+  @override
+  Future<SyncAuthenticatedSession> connect() async => _ConnectedSession(remote);
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Future<SyncAuthenticatedSession?> restore() async => null;
+}
+
+final class _ConnectedSession implements SyncAuthenticatedSession {
+  const _ConnectedSession(this.remoteStore);
+
+  @override
+  String get email => 'manoschacabuco@gmail.com';
+
+  @override
+  final RemoteSyncStore remoteStore;
+
+  @override
+  Future<void> close() async {}
+}
+
+final class _FirstPullFailingRemoteStore implements RemoteSyncStore {
+  bool fail = true;
+
+  @override
+  Future<List<SyncEnvelope>> pull({required Set<String> knownChangeIds}) async {
+    if (fail) throw const FormatException('dato privado');
+    return const [];
+  }
+
+  @override
+  Future<void> push(SyncEnvelope envelope) async {}
+
+  @override
+  Future<bool> hasAsset(String hash) async => false;
+
+  @override
+  Future<void> uploadAsset(SyncAssetReference asset, Uint8List bytes) async {}
+
+  @override
+  Future<Uint8List?> downloadAsset(SyncAssetReference asset) async => null;
 }
 
 final class _ConfigurableAuthenticator

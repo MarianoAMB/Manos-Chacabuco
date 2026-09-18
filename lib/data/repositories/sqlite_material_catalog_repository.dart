@@ -36,15 +36,41 @@ final class SqliteMaterialCatalogRepository
   Future<void> saveCategory(MaterialCategory category) async {
     final row = _categoryToRow(category);
     try {
-      final updated = await _appDatabase.database.update(
-        'material_categories',
-        row,
-        where: 'id = ?',
-        whereArgs: [category.metadata.id],
-      );
-      if (updated == 0) {
-        await _appDatabase.database.insert('material_categories', row);
-      }
+      await _appDatabase.database.transaction((transaction) async {
+        if (category.metadata.deletedAt == null) {
+          // Sync can legitimately bring two IDs with the same name. Keep
+          // existing rows editable; only a new name or a restore may create
+          // another collision through the local UI.
+          final alreadyHasName = await transaction.query(
+            'material_categories',
+            columns: ['id'],
+            where: 'id = ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+            whereArgs: [category.metadata.id, row['name']],
+            limit: 1,
+          );
+          if (alreadyHasName.isEmpty) {
+            final duplicate = await transaction.query(
+              'material_categories',
+              columns: ['id'],
+              where:
+                  'id <> ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+              whereArgs: [category.metadata.id, row['name']],
+              limit: 1,
+            );
+            if (duplicate.isNotEmpty) throw const DuplicateCategoryException();
+          }
+        }
+
+        final updated = await transaction.update(
+          'material_categories',
+          row,
+          where: 'id = ?',
+          whereArgs: [category.metadata.id],
+        );
+        if (updated == 0) {
+          await transaction.insert('material_categories', row);
+        }
+      });
     } on DatabaseException catch (error) {
       if (error.isUniqueConstraintError()) {
         throw const DuplicateCategoryException();

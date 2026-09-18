@@ -47,15 +47,42 @@ final class SqliteProductCatalogRepository implements ProductCatalogRepository {
       'deleted_at': category.metadata.deletedAt?.toUtc().toIso8601String(),
     };
     try {
-      final updated = await _appDatabase.database.update(
-        'product_categories',
-        row,
-        where: 'id = ?',
-        whereArgs: [category.metadata.id],
-      );
-      if (updated == 0) {
-        await _appDatabase.database.insert('product_categories', row);
-      }
+      await _appDatabase.database.transaction((transaction) async {
+        if (category.metadata.deletedAt == null) {
+          // Sync may leave same-name IDs on this device. An unchanged name
+          // must remain editable; creating or restoring a duplicate must not.
+          final alreadyHasName = await transaction.query(
+            'product_categories',
+            columns: ['id'],
+            where: 'id = ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+            whereArgs: [category.metadata.id, row['name']],
+            limit: 1,
+          );
+          if (alreadyHasName.isEmpty) {
+            final duplicate = await transaction.query(
+              'product_categories',
+              columns: ['id'],
+              where:
+                  'id <> ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+              whereArgs: [category.metadata.id, row['name']],
+              limit: 1,
+            );
+            if (duplicate.isNotEmpty) {
+              throw const DuplicateProductCategoryException();
+            }
+          }
+        }
+
+        final updated = await transaction.update(
+          'product_categories',
+          row,
+          where: 'id = ?',
+          whereArgs: [category.metadata.id],
+        );
+        if (updated == 0) {
+          await transaction.insert('product_categories', row);
+        }
+      });
     } on DatabaseException catch (error) {
       if (error.isUniqueConstraintError()) {
         throw const DuplicateProductCategoryException();

@@ -36,14 +36,22 @@ final class SqliteHistoricalImportRepository
       'import_records',
       where: 'spreadsheet_id = ?',
       whereArgs: [spreadsheetId],
+      orderBy: 'source_key, imported_at, id',
     );
-    return {
-      for (final row in rows)
-        row['source_key']! as String: ImportSourceLink(
-          sourceKey: row['source_key']! as String,
-          targetId: row['target_id']! as String,
-        ),
-    };
+    final links = <String, ImportSourceLink>{};
+    for (final row in rows) {
+      final sourceKey = row['source_key']! as String;
+      final targetId = row['target_id']! as String;
+      final existing = links[sourceKey];
+      if (existing != null && existing.targetId != targetId) {
+        throw const AmbiguousImportSourceException();
+      }
+      links[sourceKey] = ImportSourceLink(
+        sourceKey: sourceKey,
+        targetId: targetId,
+      );
+    }
+    return links;
   }
 
   @override
@@ -246,6 +254,19 @@ final class SqliteHistoricalImportRepository
     String targetId,
     DateTime now,
   ) async {
+    final existing = await transaction.query(
+      'import_records',
+      columns: const ['target_id'],
+      where: 'source_key = ?',
+      whereArgs: [source.stableKey],
+    );
+    if (existing.isNotEmpty) {
+      if (existing.any((row) => row['target_id'] != targetId)) {
+        throw const AmbiguousImportSourceException();
+      }
+      await _touch(transaction, source, now);
+      return;
+    }
     await transaction.insert('import_records', {
       'id': _uuid.v4(),
       'source_key': source.stableKey,
@@ -258,7 +279,7 @@ final class SqliteHistoricalImportRepository
       'original_name': source.originalName,
       'imported_at': now.toIso8601String(),
       'last_seen_at': now.toIso8601String(),
-    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    });
   }
 
   Future<void> _touch(

@@ -438,7 +438,7 @@ void main() {
     expect(await upgraded.database.query('import_records'), isEmpty);
   });
 
-  test('migra v7 a v8 sin alterar productos, presupuestos, preferencias ni importaciones', () async {
+  test('migra v7 a v9 sin alterar productos, presupuestos, preferencias ni importaciones', () async {
     final directory = await Directory.systemTemp.createTemp('manos-v6-');
     addTearDown(() => directory.delete(recursive: true));
     final path = paths.join(directory.path, 'manos.db');
@@ -508,7 +508,7 @@ void main() {
     );
     addTearDown(upgraded.close);
 
-    expect(await upgraded.database.getVersion(), 8);
+    expect(await upgraded.database.getVersion(), 9);
     expect(
       (await upgraded.database.query('products')).single['name'],
       'Producto que no se pierde',
@@ -535,6 +535,67 @@ void main() {
     );
     expect(await upgraded.database.query('sync_outbox'), isNotEmpty);
     expect(await upgraded.database.query('sync_entity_state'), isEmpty);
+  });
+
+  test('migra v8 a v9 y conserva vínculos mientras acepta importaciones de otra PC', () async {
+    final directory = await Directory.systemTemp.createTemp('manos-v8-v9-');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = paths.join(directory.path, 'manos.db');
+    final oldDatabase = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 8,
+        onCreate: (database, version) =>
+            DatabaseMigrations.migrate(database, 0, version),
+      ),
+    );
+    final now = DateTime.utc(2026, 9, 18).toIso8601String();
+    final original = {
+      'id': 'import-local',
+      'source_key': 'archivo|hoja|producto|1',
+      'spreadsheet_id': 'archivo',
+      'sheet_name': 'hoja',
+      'source_row': 1,
+      'section': 'producto',
+      'record_type': 'product',
+      'target_id': 'producto-local',
+      'original_name': 'Producto conservado',
+      'imported_at': now,
+      'last_seen_at': now,
+    };
+    await oldDatabase.insert('import_records', original);
+    await oldDatabase.close();
+
+    final upgraded = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: path,
+    );
+    addTearDown(upgraded.close);
+    expect(await upgraded.database.getVersion(), 9);
+    expect(
+      (await upgraded.database.query('import_records')).single['target_id'],
+      'producto-local',
+    );
+    await upgraded.database.insert('import_records', {
+      ...original,
+      'id': 'import-remoto',
+      'target_id': 'producto-remoto',
+    });
+    final links = await upgraded.database.query(
+      'import_records',
+      where: 'source_key = ?',
+      whereArgs: [original['source_key']],
+    );
+    expect(links.map((row) => row['target_id']).toSet(), {
+      'producto-local',
+      'producto-remoto',
+    });
+    final outbox = await upgraded.database.query(
+      'sync_outbox',
+      where: 'entity_type = ? AND entity_id = ?',
+      whereArgs: ['importRecord', 'import-remoto'],
+    );
+    expect(outbox, hasLength(1));
   });
 }
 

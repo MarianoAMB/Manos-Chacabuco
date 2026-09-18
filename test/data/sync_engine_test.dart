@@ -90,6 +90,234 @@ void main() {
   });
 
   test(
+    'dos registros de importación equivalentes con IDs distintos se conservan',
+    () async {
+      final remote = FakeRemoteSyncStore();
+      final a = await _Device.open('import-equivalent-a');
+      final b = await _Device.open('import-equivalent-b');
+      addTearDown(a.close);
+      addTearDown(b.close);
+      await _insertImportRecord(a, 'import-record-a', 'product-compartido');
+      await _insertImportRecord(b, 'import-record-b', 'product-compartido');
+
+      await _sync(a, remote);
+      await _sync(b, remote);
+      await _sync(a, remote);
+      expect(_remoteImportRecordCount(remote), 2);
+      await _sync(b, remote);
+      expect(_remoteImportRecordCount(remote), 2);
+
+      for (final device in [a, b]) {
+        final records = await device.database.database.query(
+          'import_records',
+          where: 'source_key = ?',
+          whereArgs: const [_importSourceKey],
+        );
+        expect(records, hasLength(2));
+        expect(records.map((row) => row['id']).toSet(), {
+          'import-record-a',
+          'import-record-b',
+        });
+        expect(records.map((row) => row['target_id']).toSet(), {
+          'product-compartido',
+        });
+        expect(await device.store.conflicts(), isEmpty);
+      }
+    },
+  );
+
+  test('misma procedencia con destinos distintos conserva ambos vínculos y productos', () async {
+    final remote = FakeRemoteSyncStore();
+    final a = await _Device.open('import-conflict-a');
+    final b = await _Device.open('import-conflict-b');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    await _insertProduct(a, 'product-a', 'Producto A');
+    await _insertProduct(b, 'product-b', 'Producto B');
+    await _insertImportRecord(a, 'import-record-a', 'product-a');
+    await _insertImportRecord(b, 'import-record-b', 'product-b');
+
+    await _sync(a, remote);
+    await _sync(b, remote);
+    expect(_remoteImportRecordCount(remote), 2);
+    await _sync(a, remote);
+    await _sync(b, remote);
+    expect(_remoteImportRecordCount(remote), 2);
+    for (final device in [a, b]) {
+      final records = await device.database.database.query(
+        'import_records',
+        where: 'source_key = ?',
+        whereArgs: const [_importSourceKey],
+      );
+      expect(records, hasLength(2));
+      expect(records.map((row) => row['id']).toSet(), {
+        'import-record-a',
+        'import-record-b',
+      });
+      expect(records.map((row) => row['target_id']).toSet(), {
+        'product-a',
+        'product-b',
+      });
+      expect(await device.store.conflicts(), isEmpty);
+      expect(await _productName(device, 'product-a'), 'Producto A');
+      expect(await _productName(device, 'product-b'), 'Producto B');
+    }
+  });
+
+  test('dos sobres remotos para la misma procedencia se integran sin duplicar envíos', () async {
+    final remote = FakeRemoteSyncStore();
+    final a = await _Device.open('import-two-envelope-a');
+    final b = await _Device.open('import-two-envelope-b');
+    final receiver = await _Device.open('import-two-envelope-receiver');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    addTearDown(receiver.close);
+    await _insertImportRecord(a, 'import-record-a', 'product-compartido');
+    await _insertImportRecord(b, 'import-record-b', 'product-compartido');
+
+    final envelopeA = (await a.store.pending()).singleWhere(
+      (change) => change.envelope.entityType == 'importRecord',
+    );
+    final envelopeB = (await b.store.pending()).singleWhere(
+      (change) => change.envelope.entityType == 'importRecord',
+    );
+    await remote.push(envelopeA.envelope);
+    await remote.push(envelopeB.envelope);
+
+    await _sync(receiver, remote);
+    await _sync(receiver, remote);
+
+    final records = await receiver.database.database.query(
+      'import_records',
+      where: 'source_key = ?',
+      whereArgs: const [_importSourceKey],
+    );
+    expect(records, hasLength(2));
+    expect(records.map((row) => row['id']).toSet(), {
+      'import-record-a',
+      'import-record-b',
+    });
+    expect(records.map((row) => row['target_id']).toSet(), {
+      'product-compartido',
+    });
+    expect(_remoteImportRecordCount(remote), 2);
+    expect(await receiver.store.conflicts(), isEmpty);
+  });
+
+  test('categorías de materia prima homónimas con IDs distintos conservan sus materiales', () async {
+    final remote = FakeRemoteSyncStore();
+    final a = await _Device.open('material-category-a');
+    final b = await _Device.open('material-category-b');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    await _insertMaterialCategory(
+      a,
+      'material-category-a',
+      'Hilos artesanales',
+    );
+    await _insertMaterialCategory(
+      b,
+      'material-category-b',
+      'Hilos artesanales',
+    );
+    await _insertMaterial(a, 'material-a', 'material-category-a');
+    await _insertMaterial(b, 'material-b', 'material-category-b');
+
+    await _sync(a, remote);
+    await _sync(b, remote);
+    await _sync(a, remote);
+    await _sync(b, remote);
+
+    for (final device in [a, b]) {
+      final categories = await device.database.database.query(
+        'material_categories',
+        where: 'name = ?',
+        whereArgs: const ['Hilos artesanales'],
+      );
+      expect(categories.map((row) => row['id']).toSet(), {
+        'material-category-a',
+        'material-category-b',
+      });
+      final materials = await device.database.database.query(
+        'materials',
+        where: 'id IN (?, ?)',
+        whereArgs: const ['material-a', 'material-b'],
+      );
+      expect(
+        {for (final row in materials) row['id']: row['category_id']},
+        {
+          'material-a': 'material-category-a',
+          'material-b': 'material-category-b',
+        },
+      );
+      expect(
+        await device.database.database.rawQuery('PRAGMA foreign_key_check'),
+        isEmpty,
+      );
+    }
+  });
+
+  test('categorías de producto homónimas con IDs distintos conservan sus productos', () async {
+    final remote = FakeRemoteSyncStore();
+    final a = await _Device.open('product-category-a');
+    final b = await _Device.open('product-category-b');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    await _insertProductCategory(
+      a,
+      'product-category-a',
+      'Lámparas artesanales',
+    );
+    await _insertProductCategory(
+      b,
+      'product-category-b',
+      'Lámparas artesanales',
+    );
+    await _insertProduct(
+      a,
+      'product-a',
+      'Producto A',
+      categoryId: 'product-category-a',
+    );
+    await _insertProduct(
+      b,
+      'product-b',
+      'Producto B',
+      categoryId: 'product-category-b',
+    );
+
+    await _sync(a, remote);
+    await _sync(b, remote);
+    await _sync(a, remote);
+    await _sync(b, remote);
+
+    for (final device in [a, b]) {
+      final categories = await device.database.database.query(
+        'product_categories',
+        where: 'name = ?',
+        whereArgs: const ['Lámparas artesanales'],
+      );
+      expect(categories.map((row) => row['id']).toSet(), {
+        'product-category-a',
+        'product-category-b',
+      });
+      final products = await device.database.database.query(
+        'products',
+        where: 'id IN (?, ?)',
+        whereArgs: const ['product-a', 'product-b'],
+      );
+      expect(
+        {for (final row in products) row['id']: row['category_id']},
+        {'product-a': 'product-category-a', 'product-b': 'product-category-b'},
+      );
+      expect(
+        await device.database.database.rawQuery('PRAGMA foreign_key_check'),
+        isEmpty,
+      );
+    }
+  });
+
+  test(
     'misma entidad crea conflicto y ambas resoluciones preservan datos',
     () async {
       final remote = FakeRemoteSyncStore();
@@ -617,9 +845,9 @@ void main() {
   );
 
   test(
-    'cache de dispositivos conserva una base v8 y sus 186 cambios pendientes',
+    'cache de dispositivos conserva una base v9 y sus 186 cambios pendientes',
     () async {
-      final root = await Directory.systemTemp.createTemp('manos-v8-cache-');
+      final root = await Directory.systemTemp.createTemp('manos-v9-cache-');
       addTearDown(() async {
         if (await root.exists()) await root.delete(recursive: true);
       });
@@ -686,8 +914,8 @@ void main() {
       );
       addTearDown(database.close);
 
-      expect(await database.database.getVersion(), 8);
-      expect(DatabaseMigrations.currentVersion, 8);
+      expect(await database.database.getVersion(), 9);
+      expect(DatabaseMigrations.currentVersion, 9);
       expect(await store.deviceId(), stableDeviceId);
       expect(await store.pendingCount(), 186);
       expect(
@@ -712,16 +940,102 @@ void main() {
 Future<void> _sync(_Device device, FakeRemoteSyncStore remote) =>
     SyncEngine(local: device.store, remote: remote).synchronize();
 
+int _remoteImportRecordCount(FakeRemoteSyncStore remote) => remote.allChanges
+    .where((change) => change.entityType == 'importRecord')
+    .length;
+
+const _importSourceKey = 'planilla|Hoja 1|Macetas|product|42';
+
+Future<void> _insertImportRecord(
+  _Device device,
+  String id,
+  String targetId,
+) async {
+  final now = DateTime.utc(2026, 9, 4, 10).toIso8601String();
+  await device.database.database.insert('import_records', {
+    'id': id,
+    'source_key': _importSourceKey,
+    'spreadsheet_id': 'planilla',
+    'sheet_name': 'Hoja 1',
+    'source_row': 42,
+    'section': 'Macetas',
+    'record_type': 'product',
+    'target_id': targetId,
+    'original_name': 'Macetero X',
+    'imported_at': now,
+    'last_seen_at': now,
+  });
+}
+
+Future<void> _insertMaterialCategory(
+  _Device device,
+  String id,
+  String name,
+) async {
+  final now = DateTime.utc(2026, 9, 4, 10).toIso8601String();
+  await device.database.database.insert('material_categories', {
+    'id': id,
+    'name': name,
+    'is_active': 1,
+    'created_at': now,
+    'updated_at': now,
+    'deleted_at': null,
+  });
+}
+
+Future<void> _insertProductCategory(
+  _Device device,
+  String id,
+  String name,
+) async {
+  final now = DateTime.utc(2026, 9, 4, 10).toIso8601String();
+  await device.database.database.insert('product_categories', {
+    'id': id,
+    'name': name,
+    'is_active': 1,
+    'created_at': now,
+    'updated_at': now,
+    'deleted_at': null,
+  });
+}
+
+Future<void> _insertMaterial(
+  _Device device,
+  String id,
+  String categoryId,
+) async {
+  final gram = (await device.database.database.query(
+    'measurement_units',
+    where: 'code = ?',
+    whereArgs: const ['gram'],
+  )).single;
+  final now = DateTime.utc(2026, 9, 4, 10).toIso8601String();
+  await device.database.database.insert('materials', {
+    'id': id,
+    'category_id': categoryId,
+    'name': id,
+    'purchase_quantity_scaled': 1000000000,
+    'purchase_unit_id': gram['id'],
+    'purchase_price_minor': 100000,
+    'currency': 'ARS',
+    'consumption_unit_id': gram['id'],
+    'is_active': 1,
+    'created_at': now,
+    'updated_at': now,
+  });
+}
+
 Future<void> _insertProduct(
   _Device device,
   String id,
   String name, {
   String? photoPath,
+  String categoryId = 'a27c29b7-5d11-4cae-9c26-57fc7a441003',
 }) async {
   final now = DateTime.utc(2026, 9, 4, 10).toIso8601String();
   await device.database.database.insert('products', {
     'id': id,
-    'category_id': 'a27c29b7-5d11-4cae-9c26-57fc7a441003',
+    'category_id': categoryId,
     'name': name,
     'description': null,
     'photo_path': photoPath,

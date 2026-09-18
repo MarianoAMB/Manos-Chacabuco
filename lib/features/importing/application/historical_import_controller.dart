@@ -86,6 +86,8 @@ final class HistoricalImportController extends ChangeNotifier {
         settings: _settingsController.settings,
         idFactory: _uuid.v4,
       );
+    } on AmbiguousImportSourceException {
+      _errorMessage = 'Esta planilla se importó en distintos dispositivos con vínculos diferentes. Tus datos están a salvo; para volver a importarla hay que revisar esos vínculos.';
     } on FormatException catch (error) {
       _errorMessage = error.message.toString();
     } catch (error, stackTrace) {

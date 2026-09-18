@@ -862,6 +862,8 @@ final class _SyncCard extends StatelessWidget {
                   ? AppColors.danger
                   : AppColors.mutedInk,
             ),
+            if (controller.lastFailureDetails case final String details)
+              _SyncFailureDetailsButton(details: details),
             if (controller.pendingCount > 0) ...[
               const SizedBox(height: AppSpacing.xs),
               Text(
@@ -889,6 +891,8 @@ final class _SyncCard extends StatelessWidget {
               value: _syncDate(controller.account.lastSyncAt),
             ),
             _SyncDetail(label: 'Estado', value: controller.statusLabel),
+            if (controller.lastFailureDetails case final String details)
+              _SyncFailureDetailsButton(details: details),
             const SizedBox(height: AppSpacing.sm),
             const Text(
               'Los cambios de todos los dispositivos se combinan '
@@ -967,6 +971,60 @@ final class _SyncCard extends StatelessWidget {
     if (value == null) return 'Todavía no se sincronizó';
     return _exactDateTime(value);
   }
+}
+
+final class _SyncFailureDetailsButton extends StatelessWidget {
+  const _SyncFailureDetailsButton({required this.details});
+
+  final String details;
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: TextButton.icon(
+      key: const Key('show-sync-failure-details'),
+      onPressed: () {
+        final report = 'Manos Chacabuco ${AppInfo.version}\n$details';
+        showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Detalle del problema'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Podés copiar este detalle para que revisemos qué falló. '
+                    'No incluye contraseñas ni códigos de acceso.',
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  SelectableText(report),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                key: const Key('copy-sync-failure-details'),
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: report));
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                },
+                icon: const Icon(Icons.copy_rounded),
+                label: const Text('Copiar detalle'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          ),
+        );
+      },
+      icon: const Icon(Icons.info_outline_rounded),
+      label: const Text('Ver detalle del problema'),
+    ),
+  );
 }
 
 final class _DevicesSection extends StatelessWidget {
